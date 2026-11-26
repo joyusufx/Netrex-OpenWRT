@@ -2,10 +2,29 @@
   <img src="docs/brand/banner.png" alt="Netrex — إنترنت عادل لكل اللي في البيت" width="100%">
 </p>
 
+<h1 align="center" dir="rtl">Netrex لراوترات OpenWrt — نسخة MIPS</h1>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/%D9%86%D8%B3%D8%AE%D8%A9%20%D8%BA%D9%8A%D8%B1%20%D8%B1%D8%B3%D9%85%D9%8A%D8%A9-OpenWrt%20%C2%B7%20MIPS-EA580C?style=for-the-badge&labelColor=0B1220" alt="نسخة غير رسمية لراوترات OpenWrt بمعمارية MIPS">
+  <img src="https://img.shields.io/badge/%D8%A7%D9%84%D8%A3%D8%B5%D9%84%20%D9%85%D9%86-@UserJoo9-22D3EE?style=for-the-badge&labelColor=0B1220" alt="الأصل من @UserJoo9">
+</p>
+
 <p align="center" dir="rtl">
+  <b>ده مش المشروع الأصلي.</b> ده بورت غير رسمي لمشروع <a href="https://github.com/UserJoo9/Netrex"><b>Netrex</b></a> بيشتغل على راوترات OpenWrt بمعمارية <b>MIPS</b> (mips و mipsel، soft-float و hard-float).<br>
+  صاحب Netrex الأصلي هو <a href="https://github.com/UserJoo9"><b>يوسف (@UserJoo9)</b></a> — وكل الفضل في المشروع الأصلي ليه. المستودع ده بيضيف بس دعم OpenWrt/MIPS. الرخصة MIT زي الأصل.
+</p>
+
+<div dir="rtl">
+
+<p align="center">
   <b>بوابة منزلية مفتوحة المصدر بتوزّع باقة الإنترنت المحدودة بعدل — لكل شخص، على كل أجهزته.</b><br>
   استهلاك لحظي، وحصص بتتنفّذ فعلًا، وتحكم في السرعة، وحجب إعلانات، وVPN ووصول من برّه البيت، في لوحة واحدة. بالعربي والإنجليزي.
 </p>
+
+> [!WARNING]
+> **نسخة غير رسمية لـ OpenWrt/MIPS.** دي للراوترات مش للكمبيوتر. التثبيت بمثبّت الراوتر اللي تحت؛ مشاكل OpenWrt/MIPS بتتسجّل هنا، وأي حاجة تانية في المستودع الأصلي.
+
+</div>
 
 <p align="center">
   <a href="https://github.com/UserJoo9/Netrex/releases/latest"><img src="https://img.shields.io/badge/release-latest-2563EB?style=for-the-badge&labelColor=0B1220" alt="آخر إصدار"></a>

@@ -2,10 +2,25 @@
   <img src="docs/brand/banner.png" alt="Netrex — fair internet for everyone at home" width="100%">
 </p>
 
+<h1 align="center">Netrex for OpenWrt — MIPS Port</h1>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/UNOFFICIAL%20PORT-OpenWrt%20%C2%B7%20MIPS-EA580C?style=for-the-badge&labelColor=0B1220" alt="Unofficial port for OpenWrt on MIPS">
+  <img src="https://img.shields.io/badge/original%20by-@UserJoo9-22D3EE?style=for-the-badge&labelColor=0B1220" alt="Original by @UserJoo9">
+</p>
+
+<p align="center">
+  <b>This is not the upstream project.</b> It is an unofficial port of <a href="https://github.com/UserJoo9/Netrex"><b>Netrex</b></a> that runs on OpenWrt routers with the <b>MIPS</b> architecture (<code>mips</code>, <code>mipsel</code>, soft- and hard-float).<br>
+  Netrex was created by <a href="https://github.com/UserJoo9"><b>Youssef (@UserJoo9)</b></a> — all credit for the original project is his. This repository only adds OpenWrt/MIPS support. MIT licence, as upstream.
+</p>
+
 <p align="center">
   <b>The open-source home gateway that shares one limited internet bundle fairly — per person, across every device they own.</b><br>
   Live usage, hard quotas, speed control, ad blocking, VPN and remote access, in one dashboard. English & Arabic.
 </p>
+
+> [!WARNING]
+> **Unofficial OpenWrt/MIPS port.** For routers, not PCs. Install with the router installer below; upstream support and bug reports about OpenWrt/MIPS belong in this repository, everything else upstream.
 
 <p align="center">
   <a href="https://github.com/UserJoo9/Netrex/releases/latest"><img src="https://img.shields.io/badge/release-latest-2563EB?style=for-the-badge&labelColor=0B1220" alt="Latest release"></a>
