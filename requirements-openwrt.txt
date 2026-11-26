@@ -1,0 +1,20 @@
+# Gateway deps for OpenWrt routers (musl libc, MIPS/ARM, no compiler).
+#
+# This file is installed with:
+#   python3 -m pip install --target /opt/quota-manager/pylib -r requirements-openwrt.txt
+#
+# Every pin here is a pure-Python wheel (py3-none-any), so it installs on any
+# CPU. The two pins differ from requirements-linux.txt because those need
+# compiled extensions no MIPS wheel exists for:
+#   * fastapi 0.141 requires pydantic 2 -> pydantic-core is Rust, no MIPS wheel.
+#     fastapi 0.115 is the last line that runs on pydantic 1.10 (pure Python).
+#   * uvicorn[standard] pulls uvloop and httptools (C extensions). Plain
+#     uvicorn uses asyncio + h11, which is all this gateway needs.
+#
+# PyYAML and websockets are NOT installed here: OpenWrt packages them as
+# python3-yaml and python3-websockets (see scripts/install_openwrt.sh), which
+# avoids needing a build toolchain on the router.
+fastapi==0.115.14
+pydantic==1.10.24
+uvicorn==0.30.6
+aiosqlite==0.22.1

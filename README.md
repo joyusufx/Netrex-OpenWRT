@@ -1,3 +1,298 @@
-# My workspace
+<p align="center">
+  <img src="docs/brand/banner.png" alt="Netrex — fair internet for everyone at home" width="100%">
+</p>
 
-Built with ML AI Code.
+<p align="center">
+  <b>The open-source home gateway that shares one limited internet bundle fairly — per person, across every device they own.</b><br>
+  Live usage, hard quotas, speed control, ad blocking, VPN and remote access, in one dashboard. English & Arabic.
+</p>
+
+<p align="center">
+  <a href="https://github.com/UserJoo9/Netrex/releases/latest"><img src="https://img.shields.io/badge/release-latest-2563EB?style=for-the-badge&labelColor=0B1220" alt="Latest release"></a>
+  <a href="https://github.com/UserJoo9/Netrex/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-CI-16A34A?style=for-the-badge&labelColor=0B1220" alt="Tests"></a>
+  <a href="https://github.com/UserJoo9/Netrex/stargazers"><img src="https://img.shields.io/badge/GitHub-star%20us-22D3EE?style=for-the-badge&logo=github&logoColor=white&labelColor=0B1220" alt="Stars"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22D3EE?style=for-the-badge&labelColor=0B1220" alt="MIT license"></a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Debian%20·%20Ubuntu%20·%20Kali-supported-0B1220?style=flat-square&logo=debian&logoColor=white" alt="Debian, Ubuntu, Kali">
+  <img src="https://img.shields.io/badge/Fedora-supported-0B1220?style=flat-square&logo=fedora&logoColor=white" alt="Fedora">
+  <img src="https://img.shields.io/badge/Arch-supported-0B1220?style=flat-square&logo=archlinux&logoColor=white" alt="Arch">
+  <img src="https://img.shields.io/badge/Raspberry%20Pi-supported-0B1220?style=flat-square&logo=raspberrypi&logoColor=white" alt="Raspberry Pi">
+  <img src="https://img.shields.io/badge/OpenWrt-supported-0B1220?style=flat-square&logo=openwrt&logoColor=white" alt="OpenWrt">
+</p>
+
+<p align="center">
+  <a href="#install"><b>Install</b></a> ·
+  <a href="#first-setup"><b>First setup</b></a> ·
+  <a href="#using-it"><b>Features</b></a> ·
+  <a href="#troubleshooting"><b>Help</b></a> ·
+  <a href="Structure_README.md"><b>Developer guide</b></a> ·
+  <a href="README_AR.md"><b>العربية</b></a>
+</p>
+
+> [!NOTE]
+> **Quota Manager is now Netrex.** Same project, same features, same settings — just a new name. Existing gateways update normally from the dashboard or apt.
+
+<p align="center">
+  <img src="docs/screenshots/overview-en.png" alt="Netrex dashboard — overview" width="100%">
+</p>
+
+<table>
+  <tr>
+    <td width="33%" valign="top"><b>📊 Fair by design</b><br>Every person gets a fixed GB or an equal share. All their devices draw from it, and only theirs stop when it runs out.</td>
+    <td width="33%" valign="top"><b>⚡ Live, to the device</b><br>Who is using what right now, daily history, top sites, WAN and LAN traffic — counted in the Linux kernel.</td>
+    <td width="33%" valign="top"><b>🛡️ Control the whole home</b><br>Speed limits, ad & content blocking, firewall, guest vouchers, VPN for chosen people, remote access with Tailscale.</td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/screenshots/people-en.png" alt="People and devices" width="100%">
+</p>
+
+---
+
+## What it does
+
+Every person gets a monthly allowance (a fixed number of GB, or an equal share of what's left). All of their devices share it. When it runs out, **their devices are cut off** — nobody else is affected.
+
+- See who used how much, live, per person and per device
+- Set speed limits and keep gaming ping low while others download
+- Block, kick or pause any device in one tap
+- Block ads and adult/gambling sites for the whole house
+- Built-in VPN, firewall, file sharing between devices, and remote access from anywhere (Tailscale)
+- Works in **English and Arabic**, light and dark, on phone and desktop
+
+## How it works
+
+A small always-on computer sits between your router and your devices. Your router keeps WiFi; this computer hands out the addresses and counts the traffic.
+
+<p align="center">
+  <img src="docs/diagrams/EN_sketch_diagram.png" width="640" alt="How Netrex connects">
+</p>
+
+---
+
+## Install
+
+You need **one always-on device** connected to your router **by cable**. Pick yours:
+
+| Your device | Best for | Go to |
+|---|---|---|
+| Old laptop / mini PC / desktop (Debian, Kali, Ubuntu) | Most people | [Linux PC](#linux-pc-or-laptop) |
+| Raspberry Pi | Low power, silent | [Raspberry Pi](#raspberry-pi) |
+| Windows or Mac you already use | No spare device | [Virtual machine](#windows--mac-virtual-machine) |
+| Old rooted Android phone | 2–5 W, battery backup | [Android](#old-android-phone-rooted) |
+| OpenWrt router | Advanced | [OpenWrt](#openwrt-router) |
+
+> Wi-Fi can't be used for the gateway itself — it must be plugged in with a cable (a cheap USB-to-Ethernet adapter works). It must stay on 24/7: if it is off, nobody has internet.
+
+**Prefer one command?** This script works out what kind of machine it is running on and installs Netrex the same way the sections below do by hand — the router installer on OpenWrt, the signed apt repository on Debian, Kali and Ubuntu, the release package on Fedora and Arch, the tarball anywhere else:
+
+```bash
+# Linux PC, VM or Raspberry Pi (sudo asks for your password)
+wget -qO- https://raw.githubusercontent.com/UserJoo9/Netrex/main/scripts/get.sh | sudo sh
+
+# OpenWrt router: its root shell has no sudo
+wget -qO- https://raw.githubusercontent.com/UserJoo9/Netrex/main/scripts/get.sh | sh
+```
+
+Installing from a fork or a branch: put `NETREX_REPO=OWNER/NAME` and `NETREX_REF=branch` in front of `sh` (for example `... | sudo NETREX_REPO=you/Netrex sh`).
+
+### Linux PC or laptop
+
+Works on **Debian, Kali and Ubuntu** (apt), **Fedora** (rpm), **Arch / Manjaro** (pacman) and any other systemd distro (tarball). Debian-family first. Run in a terminal:
+
+```bash
+sudo apt-get update
+sudo install -d /etc/apt/keyrings
+curl -fsSL https://UserJoo9.github.io/Netrex/quota-manager.gpg | \
+  sudo gpg --dearmor -o /etc/apt/keyrings/quota-manager.gpg
+echo "deb [signed-by=/etc/apt/keyrings/quota-manager.gpg] https://UserJoo9.github.io/Netrex stable main" | \
+  sudo tee /etc/apt/sources.list.d/quota-manager.list
+sudo apt-get update
+sudo apt-get install netrex
+```
+
+Prefer a single file? Download `netrex_<version>_all.deb` from [Releases](https://github.com/UserJoo9/Netrex/releases) and run `sudo apt install ./netrex_*_all.deb`.
+
+**Other distros** - download the matching file from [Releases](https://github.com/UserJoo9/Netrex/releases):
+
+```bash
+# Fedora / RHEL family
+sudo dnf install ./netrex-<version>-1.noarch.rpm
+
+# Arch / Manjaro
+sudo pacman -U netrex-<version>-1-any.pkg.tar.zst
+
+# Any other systemd distro
+tar xzf netrex-<version>.tar.gz && cd netrex-<version> && sudo ./install.sh
+```
+
+The in-app updater picks the right file for how you installed. Fedora and Arch support is new: if your box runs SELinux or firewalld and forwarded traffic is blocked, set `QUOTA_DISABLE_FIREWALLD=1` before installing, or open an issue with the output.
+
+Then continue with [First setup](#first-setup).
+
+### Raspberry Pi
+
+1. Install **Raspberry Pi OS** (64-bit, Lite is fine) with Raspberry Pi Imager.
+2. Plug it into the router with an Ethernet cable.
+3. Follow the [Linux PC](#linux-pc-or-laptop) steps above, then [First setup](#first-setup).
+
+### Windows / Mac (virtual machine)
+
+No spare device? Run the gateway inside a Debian virtual machine on the computer you already have.
+
+1. Install **VirtualBox** or **VMware**, and create a **Debian** VM.
+2. Set the VM network to **Bridged** and pick the **Ethernet (cable)** adapter. *(VMware: Edit → Virtual Network Editor → `VMnet0` → "Bridged to" → your Ethernet card; leave it off "Automatic".)*
+3. Plug the computer into the router with a **cable**, then restart the VM.
+4. Install the package inside the VM using the [Linux PC](#linux-pc-or-laptop) steps.
+5. The computer must stay on, and wired, while you want the limits to work.
+
+> **Do not bridge to Wi-Fi.** A Wi-Fi bridge shares one address with the VM, so the VM can browse the internet but never sees the other devices' traffic. Everything *looks* connected, yet devices show "connected, no internet", the counters stay at 0 and speed limits do nothing. If you have no cable, use a **USB Ethernet adapter** passed through to the VM (it behaves like a cable).
+
+**Quick check inside the VM:**
+
+```bash
+ip -br a                       # the card should hold your router-side IP and 192.168.2.1
+ping -c2 192.168.1.1           # your router; around 1 ms on a cable, several ms on Wi-Fi
+sudo nft list counters | grep -A2 q_up_192_168_2   # bytes grow while a phone browses
+```
+
+The card is found automatically (the one holding `192.168.2.1`), so a different name such as `ens34` is fine. After changing the VM's network, restart with `sudo systemctl restart quota-gateway`.
+
+Great for trying Netrex before buying anything.
+
+### Old Android phone (rooted)
+
+Android 7–14 with root, plus a USB-C/OTG hub with an **Ethernet port and charging pass-through**.
+
+1. Plug the hub into the router with a cable.
+2. Install a Debian 12 (ARM64) chroot (for example with LinuxDeploy) and open its terminal as root.
+3. Follow the [Linux PC](#linux-pc-or-laptop) steps inside it, then [First setup](#first-setup).
+
+Tip: limit charging to 60–70 % (ACC app) so the battery lasts.
+
+### OpenWrt router
+
+OpenWrt 22.03+ with 128 MB+ RAM (on small-flash routers, use a USB drive with ExtRoot).
+
+OpenWrt 25.12 replaced `opkg` with `apk`; the installer below detects which one your router has (22.03-24.10 use `opkg`):
+
+```bash
+wget -O /tmp/install_openwrt.sh https://raw.githubusercontent.com/UserJoo9/Netrex/main/scripts/install_openwrt.sh
+sh /tmp/install_openwrt.sh
+```
+
+> OpenWrt support is **experimental**: x86_64 and aarch64 routers/PCs work best (the Python packages ship ready-made binaries for them). MIPS and MIPS little-endian routers are supported too — the gateway picks the right ready-made binary for your router's exact chip and float ABI automatically, with soft-float as the safe fallback. Passkeys are not available on a router: sign in with password + TOTP. If it fails, open an issue with the full output. Details: docs/OPENWRT.md.
+
+---
+
+## First setup
+
+**1. Turn off DHCP on your router.** Open your router's page (usually `http://192.168.1.1`), find *DHCP / LAN* and switch DHCP **off**. Keep **Wi-Fi** and **NAT** on. Also turn off **IPv6 / Router Advertisement** if you see it.
+
+**2. Reconnect your devices** (toggle airplane mode or Wi-Fi) so they get a new address from the gateway.
+
+**3. Open the dashboard** from any device:
+
+```
+http://192.168.2.1:8080
+```
+
+Password: **`admin`** — you'll be asked to change it right away.
+
+**4. Fill in the welcome screen:** your bundle size (e.g. `140` GB) and the day your provider renews it.
+
+**5. Give people allowances.** New devices appear on their own, but start **disabled** (0 GB) as a safety lock. Add a person, assign the device to them, and set their share.
+
+> Can't open the dashboard? A device that still has an old address needs to reconnect. You can also try `http://192.168.1.110:8080`.
+>
+> Give the gateway a fixed address (reserve it on the router) — if its address changes, nobody gets internet.
+
+---
+
+## Reach the dashboard from outside your home
+
+Many internet lines block or drop connections coming from outside, so opening a port on your public IP often does not work. Use the built-in **Tailscale** instead: **Internet → Remote access → Install**, sign in once, then install the Tailscale app on your phone with the same account and open the address shown on that card. Nothing is opened on your public IP, so keep the "Allow dashboard access from the internet" switch off.
+
+---
+
+## Using it
+
+| Page | What you do there |
+|---|---|
+| **Overview** | Remaining bundle, days left, live speed and who is using it right now |
+| **People & devices** | Add people, move devices, top up GB, speed limits, block or kick |
+| **Quota** | Bundle size, renewal day, top-up packs, optional daily quota switch |
+| **Network** | Guest mode, new-device rules, IP reservations, allow / block lists |
+| **Internet** | Line status, public IP, direct PPPoE mode, remote access with Tailscale |
+| **Security** | Firewall, ad & content blocking, HTTPS |
+| **VPN** | Add servers, choose who goes through the VPN |
+| **Insights** | Daily usage, top devices, most visited domains |
+| **Share** | Send files and folders between devices, even straight to a nearby device; share a hard disk with every device |
+| **System** | Language, light/dark, colour themes, password and 2FA, updates, logs; restart, factory reset, turn off |
+
+Handy to know:
+
+- **Top up** a person mid-month from their card — they're back online instantly.
+- **Eye icon** hides names and MAC addresses, handy before showing your screen.
+- **Daily quota (optional):** switch it on in **Quota**, then open a person's card → **Daily plan**. Choose *fixed GB per day* or *split what is left of the month over the days left*, what happens to unused GB (next day or spread), heavier days, and how the person's devices share the day. The monthly quota still applies; at the daily limit the devices pause until midnight. The person sees today's plan on their usage page.
+- **My usage page:** any device can open `http://192.168.2.1:8080/milestone` (no login) to see its own remaining allowance.
+- The dashboard opens at the same address as always (`http://<gateway>:8080/`). Old bookmarks to `/ui/` forward there automatically.
+- **WAN | LAN switch** above the Overview chart: the same live speed, daily usage and top devices, for the internet or for traffic inside your home (NAS, router, the gateway itself).
+- **Guest vouchers:** in **Network** → *Guest vouchers*, create a one-time code with a GB allowance (and an optional expiry or note). A guest waiting on the portal page types the code and gets that allowance right away, without you approving them by hand. Each code works once; unused codes can be revoked from the same list. Waiting guests show as *Pending approval* in People & devices.
+- **Sharing**: drop files or folders on the Share page, or send them straight to another device on the WiFi (up to 50 MB; several files or folders arrive as one ZIP).
+- **Internet schedule** (new page): turn the internet off at set times for chosen people or devices, e.g. *School nights* 23:00-07:00 Sunday to Thursday. Start from a ready plan or set your own times (a time can run past midnight), mark holidays as days off, give **bonus time** (+15/+30/+60 min) without editing, and list sites that stay **always allowed** (school platform, study sites). The device's card shows when its internet comes back; the home network keeps working. The gateway frees each device at its end time on its own, even if the service restarts. Always-allowed sites only open on devices that use the gateway for DNS (turn off Private DNS / secure DNS on that device).
+- **Network drives** (Share page): plug a hard disk into the gateway and press *Share*, or add a folder another PC or the router already shares (`//192.168.1.5/Movies`). Devices open it at `\\192.168.2.1\<name>` (Windows) or `smb://192.168.2.1/<name>`, no password. **Access** on each share picks who gets in (every device with internet, or only the devices you choose) and gives any device read-write, read-only or no access; cut-off devices never get in. Shares are reachable from the home network only. The first time, the page offers to install Samba. Shares come back on their own after a reboot or when the disk is plugged back in.
+- **Restart / factory reset / turn off** (System → Power): restart the gateway or the whole machine; factory reset puts the settings back to how a fresh install starts without reinstalling (tick *keep people and devices* to keep people, devices, the bundle, this month's usage and your password; the line mode and PPPoE login always stay, and the database is backed up to `/var/lib/quota-gateway/backups/` first); turn off stops the gateway and keeps it off after a reboot (turn the router's DHCP back on first; to start it again: `sudo systemctl enable --now dnsmasq quota-gateway`).
+- Risky buttons (kick, blacklist, enable HTTPS, remove an allow/block entry, clear all) ask you to **tap twice** — the second tap confirms.
+
+---
+
+## Update & remove
+
+The dashboard checks for updates itself (**System → Updates**) and can install them in one click. Your settings and data are kept.
+
+```bash
+sudo apt-get update && sudo apt-get install --only-upgrade netrex   # update
+sudo apt remove netrex                                                    # remove, keep data
+sudo apt purge netrex                                                     # remove everything
+```
+
+> Installed it earlier as `quota-manager`? Run `sudo apt-get update && sudo apt-get install netrex` once (or update from the dashboard). The old package is removed automatically; your settings and data stay. Use `apt-get install`, not `apt-get upgrade`: `upgrade` skips packages it has to newly install.
+
+
+Your data lives in `/var/lib/quota-gateway/quota.db`. To back it up (safe while the gateway is running):
+
+```bash
+sudo python3 -c "import sqlite3; sqlite3.connect('/var/lib/quota-gateway/quota.db').backup(sqlite3.connect('/root/netrex-backup.db'))"
+```
+
+Don't just copy `quota.db` with `cp` while the gateway runs: recent changes may still sit in a side file and the copy can come out broken. Restoring a backup is in the [backup and restore guide](Structure_README.md#sqlite-backup-and-restore).
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| No internet after setup | Make sure router DHCP is **off**, then reconnect the device |
+| Device has internet but isn't counted | Turn off IPv6 / Router Advertisement on the router |
+| A computer has no internet and shows under *Unmanaged devices* | It uses a **manually typed IP**. Set it to obtain an IP **automatically (DHCP)**; to keep one fixed address, reserve it for that device in the dashboard instead |
+| Running in a VM: devices connect but no internet, counters stay 0 | The VM is bridged to Wi-Fi. Bridge it to the **Ethernet** card (see [virtual machine](#windows--mac-virtual-machine)) |
+| Install says "no installation candidate" | Run `sudo apt-get update` first |
+| Everything stopped after a reboot | `sudo systemctl enable --now quota-gateway` |
+| Forgot the password | Ask in an issue, or see the developer guide below |
+| Speed limits do nothing | Network page → turn shaping on and enter your real line speed |
+
+## Good to know
+
+- Usage is counted every ~15 seconds, so numbers are approximate.
+- Over-limit users are fully cut off, not slowed.
+- If the gateway loses power, the home network loses internet.
+- Deleting a device blocks it for good until you remove it from the block list.
+- One admin session at a time: signing in on another device signs the first one out, and changing the password signs out everywhere.
+- In **LAN** mode, firewall rules whose source is your home network have no effect (home devices are always allowed); use blocks or switch to **WAN** mode to restrict them.
+
+---
+
+**Developers:** see [Structure_README.md](Structure_README.md) · **License:** [MIT](LICENSE) · Not affiliated with any ISP.

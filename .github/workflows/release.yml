@@ -1,0 +1,144 @@
+# Netrex — build a .deb and publish it to GitHub Releases.
+#
+# The .deb is built and released ONLY from this workflow. Triggered by pushing a
+# version tag (v<major>.<minor>.<patch>, e.g. `git tag v0.1.0 && git push --tags`).
+# The released version is the single source of truth in quota/version.py; the tag
+# must match it (the workflow fails loudly if they drift, so a tag can never ship
+# the wrong version).
+#
+# GitHub Releases are immutable: pushing a second tag with the same name is
+# rejected by GitHub. The `latest` release is the newest tag (softprops sets it
+# via generated tags unless `make_latest` is 'false').
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  packaging-smoke:
+    uses: ./.github/workflows/packaging-smoke.yml
+    permissions:
+      contents: read
+
+  build:
+    needs: [ci, packaging-smoke]
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The version is the single source of truth in quota/version.py. Import it
+      # so the package metadata, the .deb filename and the Release all agree.
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          # Import quota/version directly (it pulls no deps) instead of
+          # regex-parsing the file — a regex with quote-char classes like
+          # [\"'] breaks out of the -c "..." shell quoting (the first live
+          # run failed with a Python SyntaxError for exactly that reason).
+          VER=$(python3 -c "import sys; sys.path.insert(0,'.'); from quota.version import __version__; print(__version__)")
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [ "$TAG" != "v${VER}" ]; then
+            echo "::error::tag '$TAG' does not match quota/version.py version '$VER' (expected tag 'v$VER')"
+            exit 1
+          fi
+          echo "version=$VER"
+          echo "tag=$TAG"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      # One script builds all four packages; the packaging-smoke workflow runs
+      # the very same script, so what was smoke-tested is what ships.
+      - name: Build all packages (.deb, .tar.gz, .rpm, .pkg.tar.zst)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq rpm zstd
+          bash packaging/build_packages.sh "${RUNNER_TEMP}/work"
+
+      - name: Inspect the artifact (sanity)
+        run: |
+          dpkg-deb --info "dist/netrex_${{ steps.version.outputs.version }}_all.deb"
+          dpkg-deb --contents "dist/netrex_${{ steps.version.outputs.version }}_all.deb" | head -40
+          V="${{ steps.version.outputs.version }}"
+          tar -tzf "dist/netrex-${V}.tar.gz" | head -8
+          rpm -qpl "dist/netrex-${V}-1.noarch.rpm" | head -8
+          tar --zstd -tf "dist/netrex-${V}-1-any.pkg.tar.zst" | head -8
+          ls -l dist
+
+      # The release description = a short install note + this version's
+      # CHANGELOG section (from "## [<ver>]" up to the next top-level "## ["
+      # header; "###" sub-headings stay). Keeps the release notes in sync with
+      # CHANGELOG.md automatically — the file is the single source of truth.
+      - name: Compose release notes (install note + CHANGELOG)
+        id: release_body
+        shell: bash
+        run: |
+          VER="${{ steps.version.outputs.version }}"
+          { printf 'Netrex **v%s**.\n\n' "${VER}"
+            printf 'Install on the gateway laptop:\n\n'
+            printf '```bash\nsudo apt install ./netrex_%s_all.deb\n```\n\n' "${VER}"
+            printf 'Or, with the apt repository configured (see README):\n'
+            printf '```bash\nsudo apt-get update && sudo apt-get install netrex\n```\n\n'
+            printf 'Other distros:\n\n'
+            printf '```bash\n# Fedora / RHEL family\nsudo dnf install ./netrex-%s-1.noarch.rpm\n\n' "${VER}"
+            printf '# Arch / Manjaro\nsudo pacman -U netrex-%s-1-any.pkg.tar.zst\n\n' "${VER}"
+            printf '# Any other systemd distro\ntar xzf netrex-%s.tar.gz && cd netrex-%s && sudo ./install.sh\n```\n\n' "${VER}" "${VER}"
+            printf 'The package configures the network stack, installs the Python\n'
+            printf 'dependencies into `/opt/quota-manager/.venv`, wires the\n'
+            printf '`quota-gateway` systemd service and starts it. See the README for\n'
+            printf 'the post-install router steps (disable DHCP, disable IPv6/RA).\n\n'
+            printf -- '---\n\n'
+            awk -v ver="${VER}" '
+              /^## / { if (insec) exit }
+              index($0, "## [" ver "]") { insec = 1; next }
+              insec { print }
+            ' CHANGELOG.md
+          } > "${RUNNER_TEMP}/release_body.md"
+          echo "body_path=${RUNNER_TEMP}/release_body.md" >> "$GITHUB_OUTPUT"
+
+      - name: Stage packages and release notes
+        run: |
+          mkdir -p "${RUNNER_TEMP}/release-assets/dist"
+          cp dist/* "${RUNNER_TEMP}/release-assets/dist/"
+          cp "${{ steps.release_body.outputs.body_path }}" "${RUNNER_TEMP}/release-assets/release_body.md"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: ${{ runner.temp }}/release-assets/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [ci, packaging-smoke, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download packages built and gated in this tag run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-assets
+          path: release-assets
+
+      - name: Upload to GitHub Releases
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          files: |
+            release-assets/dist/netrex_*.deb
+            release-assets/dist/netrex-*.tar.gz
+            release-assets/dist/netrex-*.rpm
+            release-assets/dist/netrex-*.pkg.tar.zst
+          body_path: release-assets/release_body.md
