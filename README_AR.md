@@ -99,10 +99,10 @@
 
 ```bash
 # كمبيوتر لينكس أو VM أو Raspberry Pi (sudo هيطلب الباسورد)
-wget -qO- https://raw.githubusercontent.com/UserJoo9/Netrex/main/scripts/get.sh | sudo sh
+wget -qO- https://raw.githubusercontent.com/joyusufx/Netrex-OpenWRT/openwrt-mips-port/scripts/get.sh | sudo sh
 
 # راوتر OpenWrt: الـ root shell بتاعه مفيهوش sudo
-wget -qO- https://raw.githubusercontent.com/UserJoo9/Netrex/main/scripts/get.sh | sh
+wget -qO- https://raw.githubusercontent.com/joyusufx/Netrex-OpenWRT/openwrt-mips-port/scripts/get.sh | sh
 ```
 
 <div dir="rtl">
@@ -179,7 +179,7 @@ OpenWrt 22.03+ وذاكرة 128MB أو أكتر (في الراوترات الص�
 </div>
 
 ```bash
-wget -O /tmp/install_openwrt.sh https://raw.githubusercontent.com/UserJoo9/Netrex/main/scripts/install_openwrt.sh
+wget -O /tmp/install_openwrt.sh https://raw.githubusercontent.com/joyusufx/Netrex-OpenWRT/openwrt-mips-port/scripts/install_openwrt.sh
 sh /tmp/install_openwrt.sh
 ```
 

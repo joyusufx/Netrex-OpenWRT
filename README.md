@@ -91,10 +91,10 @@ You need **one always-on device** connected to your router **by cable**. Pick yo
 
 ```bash
 # Linux PC, VM or Raspberry Pi (sudo asks for your password)
-wget -qO- https://raw.githubusercontent.com/UserJoo9/Netrex/main/scripts/get.sh | sudo sh
+wget -qO- https://raw.githubusercontent.com/joyusufx/Netrex-OpenWRT/openwrt-mips-port/scripts/get.sh | sudo sh
 
 # OpenWrt router: its root shell has no sudo
-wget -qO- https://raw.githubusercontent.com/UserJoo9/Netrex/main/scripts/get.sh | sh
+wget -qO- https://raw.githubusercontent.com/joyusufx/Netrex-OpenWRT/openwrt-mips-port/scripts/get.sh | sh
 ```
 
 Installing from a fork or a branch: put `NETREX_REPO=OWNER/NAME` and `NETREX_REF=branch` in front of `sh` (for example `... | sudo NETREX_REPO=you/Netrex sh`).
@@ -180,7 +180,7 @@ OpenWrt 22.03+ with 128 MB+ RAM (on small-flash routers, use a USB drive with Ex
 OpenWrt 25.12 replaced `opkg` with `apk`; the installer below detects which one your router has (22.03-24.10 use `opkg`):
 
 ```bash
-wget -O /tmp/install_openwrt.sh https://raw.githubusercontent.com/UserJoo9/Netrex/main/scripts/install_openwrt.sh
+wget -O /tmp/install_openwrt.sh https://raw.githubusercontent.com/joyusufx/Netrex-OpenWRT/openwrt-mips-port/scripts/install_openwrt.sh
 sh /tmp/install_openwrt.sh
 ```
 
