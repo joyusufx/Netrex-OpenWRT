@@ -107,7 +107,6 @@ install_tarball() {
     # before that, so find the installer instead of trusting the name.
     script=$(find "$TMP/unpack" -maxdepth 2 -name install.sh | head -n 1)
     [ -n "$script" ] || die "the release tarball has no install.sh"
-    dir=${script%/*}
     if have bash; then
         bash "$script"
     else
@@ -133,13 +132,16 @@ install_debian() {
         printf 'deb [signed-by=/etc/apt/keyrings/quota-manager.gpg] %s %s main\n' \
             "$SITE" "$CHANNEL" > /etc/apt/sources.list.d/quota-manager.list
         apt-get update -qq || die "apt-get update failed after adding the repository"
+        # The apt repo still carries the pre-0.6 name until the first netrex
+        # release is published; both install the same gateway.
         DEBIAN_FRONTEND=noninteractive apt-get install -y netrex \
+            || DEBIAN_FRONTEND=noninteractive apt-get install -y quota-manager \
             || die "apt-get could not install netrex - see https://github.com/$REPO/releases"
         return 0
     fi
     log "no apt repository at $SITE - using the release package instead"
     deb=$(download_asset '_all\.deb$') \
-        || die "no .deb release found for $REPO - see https://github.com/$REPO/releases"
+        || die "no .deb release or apt site found for $REPO - clone the fork and run scripts/setup_gateway_kali.sh, or see https://github.com/$REPO/releases"
     DEBIAN_FRONTEND=noninteractive apt-get install -y "$deb"
 }
 

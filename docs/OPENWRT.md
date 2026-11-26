@@ -10,7 +10,13 @@ setup is one command.
 ```sh
 # on the router (ash, root):
 sh install_openwrt.sh          # from the release tarball root, or scripts/
+
+# or in one line, without the tarball (POSIX sh, runs under ash):
+wget -qO- https://raw.githubusercontent.com/UserJoo9/Netrex/main/scripts/get.sh | sh
 ```
+
+`scripts/get.sh` detects OpenWrt and runs this installer; on a fork or branch,
+`NETREX_REPO=OWNER/NAME NETREX_REF=branch get.sh` clones that instead.
 
 The installer detects the package manager (apk on OpenWrt 25.12+, opkg on
 22.03-24.10), installs the dependencies (python3, python3-pip, nftables,
