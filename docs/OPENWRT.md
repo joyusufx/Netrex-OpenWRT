@@ -21,14 +21,43 @@ wget -qO- https://raw.githubusercontent.com/joyusufx/Netrex-OpenWRT/openwrt-mips
 The installer detects the package manager (apk on OpenWrt 25.12+, opkg on
 22.03-24.10), installs the dependencies (python3, python3-pip, nftables,
 kmod-nft-core, kmod-tun, kmod-ifb, tc, ip-full, dnsmasq-full, git-http,
-ca-bundle, python3-yaml, python3-websockets, conntrack), clones the code to
+ca-bundle, python3-yaml, python3-websockets, conntrack), puts the code in
 `/opt/quota-manager` (the on-disk path is deliberately unchanged for existing
 installs and the self-updater), installs the Python deps and registers the
 procd service `/etc/init.d/quota-manager` (enabled, respawned by procd).
 
-Re-running the installer, or the in-app self-update (`quota/updater.py`), runs
-it again with `--upgrade`: it pulls the repo and restarts the service. An
-existing `/etc/quota-gateway/config.yaml` is never overwritten.
+If `/opt/quota-manager` already holds the code — a git checkout, or a tree
+copied over by hand — the installer keeps it and skips the download, so a
+re-run works offline. Re-running the installer, the in-app self-update
+(`quota/updater.py`) or `--upgrade` pulls only a git checkout; an existing
+`/etc/quota-gateway/config.yaml` is never overwritten.
+
+## Seeded network settings (why quota accounting works at all)
+
+`config.yaml` ships the Debian laptop gateway's values: clients on a separate
+`192.168.2.0/24` and dnsmasq's lease file at `/var/lib/misc/dnsmasq.leases`.
+On a router neither is true — the box **is** the LAN gateway and OpenWrt starts
+dnsmasq with `--dhcp-leasefile=/tmp/dhcp.leases`. With the Debian values the
+lease sync found no file, no MAC↔IP binding reached the engine, no
+`q_up_/q_down_` counter was installed, and every device showed up in the
+dashboard while nothing it transferred was ever charged or cut.
+
+Two layers now prevent that:
+
+- **Installer seed (fresh installs).** Before the first start it seeds the
+  `dhcp` block from UCI: `gateway_ip` and `router_ip` = `network.lan.ipaddr`,
+  `subnet` = `network.lan.netmask`, `pool_start`/`pool_end` from
+  `dhcp.lan.start`/`dhcp.lan.limit` (default `.100`–`.200`), and
+  `lease_file: /tmp/dhcp.leases`. An existing `config.yaml` is never touched.
+- **App fallback (updates and hand-edited boxes).** `Gateway._lease_file_path`
+  (`run.py`) uses the configured lease file; if it is missing on an OpenWrt
+  host (`quota/hostarch.py`) it falls back to `/tmp/dhcp.leases` and logs a
+  warning once. On a Debian box the fallback is never used, so a stray
+  `/tmp/dhcp.leases` cannot be mistaken for this gateway's leases.
+- **Static-IP clients.** A client with a fixed address never gets a DHCP lease,
+  so its `ip` was empty. The tick now completes it from the kernel neighbour
+  table (`ip neigh`, non-`FAILED`/`INCOMPLETE` rows), so static clients are
+  counted and blocked like everyone else.
 
 ## Python stack on a router
 

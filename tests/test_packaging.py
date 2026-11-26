@@ -473,6 +473,139 @@ def test_openwrt_installer_supports_apk_and_opkg():
     assert "procd" in init, "procd service, not systemd"
 
 
+def _run_checkout_step(tmp_path, *, has_git, has_code, upgrade):
+    """Run the router installer's 'repo already there?' block for real, with a
+    fake `git` that only records its arguments."""
+    text = _read(REPO / "scripts" / "install_openwrt.sh").replace("\r\n", "\n")
+    start = text.index('if [ -d "$APP_DIR/.git" ] || [ -f "$APP_DIR/run.py" ]; then')
+    fragment = text[start:text.index("# MIPS routers have no Rust/C toolchain")]
+    app = tmp_path / "app"
+    app.mkdir(parents=True, exist_ok=True)
+    if has_git:
+        (app / ".git").mkdir()
+    if has_code:
+        (app / "run.py").write_text("")
+    bindir = tmp_path / "bin"
+    bindir.mkdir(parents=True, exist_ok=True)
+    calls = tmp_path / "git.log"
+    calls.write_text("")
+    git = bindir / "git"
+    git.write_text(f'#!/bin/sh\nfor a in "$@"; do echo "$a" >> "{calls}"; done\nexit 0\n')
+    git.chmod(0o755)
+    script = tmp_path / "step.sh"
+    script.write_text(
+        "log() { echo \"[netrex] $*\"; }\n"
+        f"APP_DIR='{app}'\nUPGRADE={upgrade}\nREPO=https://example.invalid/x.git\n"
+        "set -eu\n" + fragment)
+    r = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True,
+                       env={"PATH": f"{bindir}:/usr/bin:/bin"}, timeout=30)
+    assert r.returncode == 0, r.stderr
+    return r.stdout, calls.read_text().split("\n")[:-1]
+
+
+def test_openwrt_installer_skips_download_when_the_repo_is_already_there(tmp_path):
+    """A second run on a router (or a tree copied in by hand) must not clone
+    over the code already on disk: the box may be offline, and the pull used to
+    fail the whole install when the checkout had no upstream."""
+    out, git = _run_checkout_step(tmp_path, has_git=True, has_code=True, upgrade=0)
+    assert git == [], "an existing checkout must not be touched without --upgrade"
+    assert "skipping download" in out
+
+    out, git = _run_checkout_step(tmp_path / "copy", has_git=False, has_code=True, upgrade=0)
+    assert git == [], "a tree copied in by hand is still a working install"
+    assert "skipping download" in out
+
+    # --upgrade pulls a git checkout, and leaves a hand-copied tree alone
+    out, git = _run_checkout_step(tmp_path / "up", has_git=True, has_code=True, upgrade=1)
+    assert git == ["-C", str(tmp_path / "up" / "app"), "pull", "--ff-only"], git
+    out, git = _run_checkout_step(tmp_path / "upcopy", has_git=False, has_code=True, upgrade=1)
+    assert git == [] and "not a git checkout" in out
+
+    # nothing on disk yet: clone
+    out, git = _run_checkout_step(tmp_path / "fresh", has_git=False, has_code=False, upgrade=0)
+    assert git[:2] == ["clone", "--depth"], git
+    assert "cloning into" in out
+
+
+def _run_config_seed_step(tmp_path, uci_values, existing=None):
+    """Run the router installer's config-seeding block for real, with a fake
+    `uci` that answers from *uci_values* (a missing key exits 1, like uci)."""
+    text = _read(REPO / "scripts" / "install_openwrt.sh").replace("\r\n", "\n")
+    start = text.index("# Seed the config once")
+    fragment = text[start:text.index('cp "$APP_DIR/scripts/quota-manager.openwrt"')]
+    app = tmp_path / "app"
+    app.mkdir(parents=True)
+    conf = tmp_path / "conf"
+    (app / "config.yaml").write_text(
+        _read(REPO / "config.yaml").replace("\r\n", "\n"), encoding="utf-8")
+    if existing is not None:
+        conf.mkdir()
+        (conf / "config.yaml").write_text(existing, encoding="utf-8")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    uci = bindir / "uci"
+    uci.write_text(
+        '#!/bin/sh\n'
+        '[ "$1" = "-q" ] || exit 1\n'
+        'shift\n'
+        '[ "$1" = "get" ] || exit 1\n'
+        'shift\n'
+        'case "$1" in\n'
+        + "".join(f"  {k}) echo '{v}' ;;\n" for k, v in uci_values.items())
+        + "  *) exit 1 ;;\n"
+        "esac\n")
+    uci.chmod(0o755)
+    script = tmp_path / "seed.sh"
+    script.write_text(
+        "log() { echo \"[netrex] $*\"; }\n"
+        f"APP_DIR='{app}'\nCONF_DIR='{conf}'\n"
+        "set -eu\n" + fragment)
+    r = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True,
+                       env={"PATH": f"{bindir}:/usr/bin:/bin"}, timeout=30)
+    assert r.returncode == 0, r.stderr
+    return r.stdout, (conf / "config.yaml").read_text(encoding="utf-8")
+
+
+def test_openwrt_installer_seeds_the_real_lan_and_router_lease_file(tmp_path):
+    """config.yaml ships the Debian laptop values (192.168.2.0/24,
+    /var/lib/misc/dnsmasq.leases). On a router that meant dnsmasq's lease file
+    was never found: devices showed up but nothing was charged or cut. The
+    installer must seed the box's own LAN and the router's lease file."""
+    out, seeded = _run_config_seed_step(tmp_path, {
+        "network.lan.ipaddr": "192.168.8.1",
+        "network.lan.netmask": "255.255.255.0",
+        "dhcp.lan.start": "100",
+        "dhcp.lan.limit": "150",
+    })
+    dhcp = yaml.safe_load(seeded)["dhcp"]
+    assert dhcp["lease_file"] == "/tmp/dhcp.leases"
+    assert dhcp["gateway_ip"] == "192.168.8.1"
+    assert dhcp["router_ip"] == "192.168.8.1"
+    assert dhcp["subnet"] == "255.255.255.0"
+    assert dhcp["pool_start"] == "192.168.8.101"
+    assert dhcp["pool_end"] == "192.168.8.250"
+    assert "# --- IPv6 dual-stack" in seeded, "comments must survive the rewrite"
+    assert "http://$LAN_IP:8080" in _read(REPO / "scripts" / "install_openwrt.sh"), \
+        "the final URL must be the box's real address, not a <router-ip> placeholder"
+
+    # a box without uci values still gets a sane OpenWrt seed
+    _, seeded = _run_config_seed_step(tmp_path / "defaults", {})
+    dhcp = yaml.safe_load(seeded)["dhcp"]
+    assert dhcp["lease_file"] == "/tmp/dhcp.leases"
+    assert (dhcp["gateway_ip"], dhcp["pool_start"], dhcp["pool_end"]) == (
+        "192.168.1.1", "192.168.1.100", "192.168.1.200")
+
+
+def test_openwrt_reinstall_never_rewrites_an_existing_config(tmp_path):
+    """An admin's config (dashboard-owned values included) must survive a
+    re-run of the installer, even if the LAN would now be derived differently."""
+    sentinel = "dhcp:\n  gateway_ip: 10.0.0.1\n  pool_start: 10.0.0.5\n"
+    out, kept = _run_config_seed_step(
+        tmp_path, {"network.lan.ipaddr": "192.168.8.1"}, existing=sentinel)
+    assert kept == sentinel
+    assert "existing" in out and "kept" in out
+
+
 def test_one_line_installer_hands_off_to_the_platforms_own_path():
     """scripts/get.sh is the one entry point the README tells people to wget
     into a root shell: it must stay POSIX sh (BusyBox ash on a router, dash on

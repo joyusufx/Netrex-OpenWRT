@@ -46,9 +46,18 @@ else
     die "neither apk nor opkg found - is this OpenWrt?"
 fi
 
-if [ -d "$APP_DIR/.git" ]; then
-    log "updating $APP_DIR"
-    git -C "$APP_DIR" pull --ff-only
+if [ -d "$APP_DIR/.git" ] || [ -f "$APP_DIR/run.py" ]; then
+    # The code is already on disk - a git checkout, or a tree copied over by
+    # hand / from a tarball: keep it and skip the download so a re-run works
+    # offline. Only --upgrade updates, and only a git checkout can be pulled.
+    if [ "$UPGRADE" -eq 1 ] && [ -d "$APP_DIR/.git" ]; then
+        log "updating $APP_DIR"
+        git -C "$APP_DIR" pull --ff-only
+    elif [ "$UPGRADE" -eq 1 ]; then
+        log "$APP_DIR is not a git checkout - keeping the local code as is"
+    else
+        log "existing installation at $APP_DIR - skipping download"
+    fi
 else
     log "cloning into $APP_DIR"
     git clone --depth 1 "$REPO" "$APP_DIR"
@@ -65,14 +74,59 @@ python3 -m pip install --no-input --no-compile --target "$PYLIB" \
     -r "$APP_DIR/requirements-openwrt.txt"
 
 # Seed the config once; an existing admin config always wins.
+#
+# config.yaml ships the Debian laptop gateway's values: clients on a separate
+# 192.168.2.0/24 and /var/lib/misc/dnsmasq.leases. On a router the box IS the
+# LAN gateway, dnsmasq writes /tmp/dhcp.leases, and the client subnet, pool and
+# netmask must be the real LAN. With the Debian values nothing is ever learned
+# from the lease file, so no device is charged and no quota can cut it.
+LAN_IP=$(uci -q get network.lan.ipaddr 2>/dev/null || true)
+LAN_MASK=$(uci -q get network.lan.netmask 2>/dev/null || true)
+LAN_IP=${LAN_IP:-192.168.1.1}
+LAN_MASK=${LAN_MASK:-255.255.255.0}
+case "$LAN_IP" in
+    *.*.*.*) LAN_PREFIX=$(echo "$LAN_IP" | cut -d. -f1-3)
+             ;;
+    *)       LAN_PREFIX=192.168.1
+             ;;
+esac
+POOL_START="${LAN_PREFIX}.100"
+POOL_END="${LAN_PREFIX}.200"
+DHCP_START=$(uci -q get dhcp.lan.start 2>/dev/null || true)
+DHCP_LIMIT=$(uci -q get dhcp.lan.limit 2>/dev/null || true)
+case "$DHCP_START" in ''|*[!0-9]*) DHCP_START= ;; esac
+case "$DHCP_LIMIT" in ''|*[!0-9]*) DHCP_LIMIT= ;; esac
+if [ -n "$DHCP_START" ] && [ -n "$DHCP_LIMIT" ]; then
+    POOL_START="${LAN_PREFIX}.$((DHCP_START + 1))"
+    POOL_END="${LAN_PREFIX}.$((DHCP_START + DHCP_LIMIT))"
+fi
 mkdir -p "$CONF_DIR"
 if [ ! -f "$CONF_DIR/config.yaml" ]; then
     cp "$APP_DIR/config.yaml" "$CONF_DIR/config.yaml"
-    log "config written to $CONF_DIR/config.yaml"
+    # set_dhcp <key> <value>: rewrite the first `<key>:` line, keep comments.
+    set_dhcp() {
+        awk -v k="$1" -v v="$2" '
+            !done && index($0, "  " k ": ") == 1 {
+                print "  " k ": " v; done = 1; next
+            }
+            { print }
+        ' "$CONF_DIR/config.yaml" > "$CONF_DIR/config.yaml.tmp" &&
+            mv "$CONF_DIR/config.yaml.tmp" "$CONF_DIR/config.yaml"
+    }
+    set_dhcp lease_file /tmp/dhcp.leases
+    set_dhcp gateway_ip "$LAN_IP"
+    set_dhcp router_ip "$LAN_IP"
+    set_dhcp subnet "$LAN_MASK"
+    set_dhcp pool_start "$POOL_START"
+    set_dhcp pool_end "$POOL_END"
+    log "config written to $CONF_DIR/config.yaml (LAN $LAN_IP/$LAN_MASK)"
+else
+    log "existing $CONF_DIR/config.yaml kept — check dhcp.gateway_ip,"
+    log "dhcp.pool_start/pool_end and dhcp.lease_file match this router"
 fi
 
 cp "$APP_DIR/scripts/quota-manager.openwrt" /etc/init.d/quota-manager
 chmod +x /etc/init.d/quota-manager
 /etc/init.d/quota-manager enable
 /etc/init.d/quota-manager restart || /etc/init.d/quota-manager start
-log "done. Dashboard: http://<router-ip>:8080"
+log "done. Dashboard: http://$LAN_IP:8080"
