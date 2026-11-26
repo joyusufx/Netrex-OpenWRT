@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 
 from core import config as cfg_mod
 from quota import db as _db
+from quota import hostarch
 from quota.arp_scan import ArpScanner
 from quota.engine import GATEWAY_MAC, EngineCounters, EngineSnapshot
 from quota.tun2socks import Tun2socksStatus
@@ -1156,6 +1157,75 @@ def test_sync_dnsmasq_leases_schedules_immediate_sweep_on_new_device(tmp_path):
     finally:
         loop.run_until_complete(gw.shutdown())
         loop.close()
+
+
+def test_lease_file_falls_back_to_openwrt_path(tmp_path, monkeypatch):
+    """config.yaml ships the Debian lease path; on an OpenWrt router dnsmasq
+    writes /tmp/dhcp.leases. When the configured file does not exist the sync
+    must use the router's file — otherwise no MAC<->IP binding ever reaches the
+    engine, no counter is installed, and nothing is charged or cut."""
+    cfg = _cfg(tmp_path)
+    cfg.dhcp.lease_file = str(tmp_path / "missing" / "dnsmasq.leases")
+    router_leases = tmp_path / "dhcp.leases"
+    router_leases.write_text(
+        "1700000000 aa:bb:cc:dd:ee:77 192.168.1.77 phone01 *\n",
+        encoding="utf-8")
+    monkeypatch.setattr("run.LEASE_FILE_FALLBACKS", (str(router_leases),))
+    # the fallback is a router behaviour only: on Debian a stray
+    # /tmp/dhcp.leases must never be mistaken for this box's leases
+    monkeypatch.setenv("QUOTA_PLATFORM", "openwrt")
+    hostarch.is_openwrt.cache_clear()
+    gw = Gateway(cfg)
+    _get_loop().run_until_complete(gw.startup())
+    _cancel_maintenance(gw)
+    try:
+        _get_loop().run_until_complete(gw._sync_dnsmasq_leases())
+        leases = _get_loop().run_until_complete(gw.database.list_leases())
+        assert [(l.mac, l.ip) for l in leases] == [
+            ("aa:bb:cc:dd:ee:77", "192.168.1.77")]
+        state = _get_loop().run_until_complete(gw.service.snapshot_state())
+        assert state["aa:bb:cc:dd:ee:77"]["ip"] == "192.168.1.77"
+    finally:
+        _get_loop().run_until_complete(gw.shutdown())
+        hostarch.is_openwrt.cache_clear()
+
+
+def test_static_ip_device_counted_from_neighbor_table(tmp_path):
+    """A client with a static IP never appears in dnsmasq's lease file, so its
+    ``ip`` stayed empty and the engine installed no counter: identified in the
+    dashboard, yet never charged and impossible to block. The neighbor table
+    knows which MAC holds the address, so the tick must use it."""
+    cfg = _cfg(tmp_path)
+    gw = Gateway(cfg)
+    mac, ip = "aa:bb:cc:dd:ee:50", "192.168.1.50"
+    gw._ip_run = FakeIpRunner(
+        json_out="",
+        text_out=f"{ip} dev br-lan lladdr {mac} REACHABLE\n")
+    _get_loop().run_until_complete(gw.startup())
+    _cancel_maintenance(gw)
+    try:
+        _get_loop().run_until_complete(gw.database.upsert_device(mac, name=mac))
+        assert _get_loop().run_until_complete(gw.database.list_leases()) == []
+
+        pushed: dict[str, str] = {}
+
+        class _FakeEngine:
+            def flush(self) -> EngineSnapshot:
+                return EngineSnapshot(by_ip={}, ip_to_mac={}, blocked={})
+            def update_state(self, ip_to_mac, blocked, *a, **k):
+                pushed.update(ip_to_mac)
+            def set_gateway_blocked(self, blocked):
+                pass
+            def stop(self):
+                pass
+        gw.engine = _FakeEngine()  # type: ignore[assignment]
+
+        _get_loop().run_until_complete(gw._maintenance_tick())
+        assert pushed.get(ip) == mac, \
+            "static-IP client must get a kernel counter from the neighbor table"
+        assert gw.holder.get().ip_to_mac.get(ip) == mac
+    finally:
+        _get_loop().run_until_complete(gw.shutdown())
 
 
 def test_sync_dnsmasq_leases_missing_file_is_safe(tmp_path):

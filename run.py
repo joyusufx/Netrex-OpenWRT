@@ -52,6 +52,7 @@ from quota import db as _db
 from quota import svcmgr
 from quota import captive_http as _captive_http
 from quota import dns_rules as _dns_rules
+from quota import hostarch
 from quota.arp_scan import ArpScanner
 from quota.dnslog import DnslogTailer
 from quota.engine import GATEWAY_MAC, EngineSnapshot, SnapshotHolder
@@ -94,6 +95,11 @@ _NEIGH_PRESENT_STATES = frozenset({"REACHABLE"})
 #: addresses — each tracked address costs two nft counters + rules, so the
 #: number is capped (newest-seen wins is not knowable here; ULA first, stable).
 IPV6_MAX_PER_MAC = 8
+#: dnsmasq lease files tried when the configured one does not exist. OpenWrt's
+#: own init script starts dnsmasq with ``--dhcp-leasefile=/tmp/dhcp.leases``, so
+#: a router install that never edited config.yaml (whose default is the Debian
+#: path) otherwise learns NO client — nothing is charged and nothing is cut.
+LEASE_FILE_FALLBACKS = ("/tmp/dhcp.leases",)
 
 
 def _iter_json_neigh(out: str):
@@ -459,6 +465,11 @@ class Gateway:
         #: True once ``ip neigh`` was read successfully at least once — only
         #: then is the neighbor table a trustworthy presence source.
         self._neigh_collected = False
+        #: IPv4 address per MAC from the neighbor table — completes devices
+        #: with a static IP (no DHCP lease) so they are counted and cut too.
+        self._neigh_ip_by_mac: dict[str, str] = {}
+        #: True once the configured lease-file fallback was announced in the log.
+        self._lease_file_fallback_logged = False
         #: IPv6 ISP probe + (ULA/global IPv6 address -> MAC) from `ip -6 neigh`
         self.ipv6_probe: object | None = None
         self._ipv6_neigh: dict[str, str] = {}
@@ -1063,6 +1074,29 @@ class Gateway:
         except Exception:  # noqa: BLE001
             log.exception("phantom device purge failed")
 
+    def _lease_file_path(self) -> Path | None:
+        """The lease file dnsmasq really writes on this box.
+
+        ``config.yaml`` ships the Debian path, which does not exist on an
+        OpenWrt router (dnsmasq there writes ``/tmp/dhcp.leases``). Without
+        this the lease sync returns quietly, no MAC<->IP binding reaches the
+        engine and every device looks present yet is never charged.
+        """
+        configured = Path(self.cfg.dhcp.lease_file or "")
+        if configured.is_file():
+            return configured
+        if not hostarch.is_openwrt():
+            return None
+        for candidate in LEASE_FILE_FALLBACKS:
+            if Path(candidate).is_file():
+                if not self._lease_file_fallback_logged:
+                    self._lease_file_fallback_logged = True
+                    log.warning(
+                        "dnsmasq lease file %s is missing — using %s instead",
+                        configured, candidate)
+                return Path(candidate)
+        return None
+
     async def _sync_dnsmasq_leases(self) -> None:
         """Learn MAC<->IP bindings from dnsmasq's lease file.
 
@@ -1070,8 +1104,8 @@ class Gateway:
         maintenance tick and feed each binding through :meth:`_persist_lease`
         (DB upsert + auto-register unknown devices + allowances).
         """
-        path = Path(self.cfg.dhcp.lease_file)
-        if not path.exists():
+        path = self._lease_file_path()
+        if path is None:
             return
         try:
             text = await asyncio.to_thread(
@@ -1180,10 +1214,13 @@ class Gateway:
         except ValueError:
             ula_net = ipaddress.ip_network("fd00:da7a:2::/64")
         active: set[str] = set()
+        ip_by_mac: dict[str, str] = {}
         ipv6_neigh: dict[str, str] = {}
         direct: set[str] = set()
         for dst, lladdr, states in rows:
             if ":" not in dst:
+                if lladdr and not states & {"FAILED", "INCOMPLETE"}:
+                    ip_by_mac.setdefault(lladdr, dst)
                 if dst in wanted and states & _NEIGH_PRESENT_STATES:
                     active.add(dst)
                 continue
@@ -1199,8 +1236,26 @@ class Gateway:
                 direct.add(lladdr)
         self._neigh_collected = True
         self._neigh_active_ips = active
+        self._neigh_ip_by_mac = ip_by_mac
         self._ipv6_neigh = ipv6_neigh
         self._ipv6_direct_macs = direct
+
+    def _fill_ips_from_neigh(self, state: dict[str, dict[str, Any]]) -> None:
+        """Give devices without a DHCP lease the IPv4 address the kernel knows.
+
+        A client configured with a static IP never appears in dnsmasq's lease
+        file, so its ``ip`` stayed empty, the engine installed no counter for
+        it, and it was identified but never charged (no block could ever fire).
+        The neighbor table still maps that MAC to the address it is using.
+        """
+        if not self._neigh_ip_by_mac:
+            return
+        for mac, entry in state.items():
+            if entry.get("ip") or mac.lower() == GATEWAY_MAC.lower():
+                continue
+            ip = self._neigh_ip_by_mac.get(mac.lower())
+            if ip:
+                entry["ip"] = ip
 
     def _ipv6_wan_wanted(self) -> bool:
         """Should client IPv6 be allowed out to the internet right now?
@@ -1691,6 +1746,7 @@ class Gateway:
         # 4. Push fresh enforcement maps into the engine + holder.
         await self._sync_static_hosts()
         state = await self.service.snapshot_state()
+        self._fill_ips_from_neigh(state)
         await self._apply_unmanaged_block(state)
         ip_to_mac = {v["ip"]: mac for mac, v in state.items() if v.get("ip")}
         # IPv6: the engine counts/cuts each known device's tracked IPv6
@@ -1995,6 +2051,7 @@ class Gateway:
         if not self._last_ip_to_mac:
             try:
                 state = await self.service.snapshot_state()
+                self._fill_ips_from_neigh(state)
                 self._last_ip_to_mac = {
                     v["ip"]: mac for mac, v in state.items() if v.get("ip")}
             except Exception:  # noqa: BLE001

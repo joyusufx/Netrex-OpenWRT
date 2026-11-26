@@ -63,6 +63,15 @@ jobs:
         run: |
           pyflakes api core quota tests run.py
 
+      - name: Validate deployment scripts (router installer, setup, helpers)
+        run: |
+          set -euo pipefail
+          for f in scripts/*.sh; do bash -n "$f"; done
+          # the OpenWrt installer and the one-liner run on BusyBox ash:
+          # keep them POSIX sh (no bash arrays, [[ ]], or local -n)
+          sh -n scripts/install_openwrt.sh
+          sh -n scripts/get.sh
+
       - name: Run test suite (pytest)
         env:
           PYTHONPATH: .

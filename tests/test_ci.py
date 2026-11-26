@@ -23,6 +23,17 @@ def _read_yaml(p: Path) -> dict:
     return data
 
 
+def test_ci_validates_the_deployment_scripts():
+    """The router installer is the deploy path for OpenWrt (there is no package
+    repo for it). CI must parse every shell script with bash and keep the
+    BusyBox-ash ones (installer + one-liner) POSIX, or a bad edit reaches a
+    router where nobody can run the test suite."""
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "bash -n" in text and "scripts/*.sh" in text
+    assert "sh -n scripts/install_openwrt.sh" in text
+    assert "sh -n scripts/get.sh" in text
+
+
 def test_ci_workflow_structure():
     data = _read_yaml(CI_WORKFLOW)
     triggers = data.get("on", data.get(True, {}))
