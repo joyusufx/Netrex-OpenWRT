@@ -47,14 +47,24 @@ defaulting there made every bare run fail on the wrong-branch heal. Overrides:
 
 Phases, each leaving installs working:
 
-1. **Heal a stale checkout** (`scripts/install_openwrt.sh` ~line 55): a clean
+1. **Heal a stale checkout** (`scripts/install_openwrt.sh` ~line 55): a
    `/opt/quota-manager` checkout without the port files gets origin repointed at
    the install repo, `openwrt-mips-port` fetched and checked out, upstream set —
-   so `--upgrade`'s `git pull --ff-only` keeps tracking the port branch.
-2. **Refuse to clobber**: a dirty checkout or a missing ref stops with the
-   "move it aside" message; nothing is overwritten.
-3. **Clone defaults** (this change): bare runs now clone the port repo/branch
-   directly; phase 1 and 2 remain for checkouts made before this default.
+   so `--upgrade`'s `git pull --ff-only` keeps tracking the port branch. Only
+   **tracked** modifications count as "local changes": every finished install
+   leaves pip's `pylib/` inside the app dir (now git-ignored), so a plain
+   `git status --porcelain` test made the heal refuse on every router.
+2. **Preserve, then replace**: if the checkout has tracked edits, or the fetch
+   fails, the unusable tree is moved aside to `/opt/quota-manager.old.<ts>`
+   (never deleted, never overwritten) and a fresh clone takes its place, so the
+   run cannot stop on a manual `mv` the user has to repeat on the router.
+3. **Clone defaults** (this change): bare runs clone the port repo/branch
+   directly; phases 1 and 2 remain for checkouts made before this default.
+
+`scripts/get.sh` now fetches the installer from the same repo/branch it will
+clone from (the fork's `openwrt-mips-port`). Before, a bare `get.sh | sh` on
+`UserJoo9/Netrex@main` downloaded the *pre-port* installer from upstream, which
+does not match the port at all. `--repo`/`--ref` still override both.
 
 Preserved exactly: `/opt/quota-manager`, `/etc/quota-gateway/*` (config and DB
 never overwritten), the skip-download-on-existing-install behaviour, and

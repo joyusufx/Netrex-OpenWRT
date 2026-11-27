@@ -58,14 +58,20 @@ if [ -d "$APP_DIR/.git" ] && ! have_port_tree; then
     # A pre-fix install cloned the remote's default branch (main = upstream
     # code), which has no requirements-openwrt.txt; reusing it made the app
     # die at startup with FileNotFoundError. Switch that checkout to the port
-    # branch instead, and never clobber local edits.
+    # branch instead of reusing it.
     WANT_REF=${REF:-openwrt-mips-port}
     # Fetch from the repo we are installing, not from `origin`: a pre-fix
     # install has origin = UserJoo9/Netrex (upstream), which has no
     # openwrt-mips-port ref, so "fetch origin $WANT_REF" dies with
     # "couldn't find remote ref". Repoint origin afterwards so --upgrade's
     # `git pull --ff-only` keeps tracking the port branch.
-    if [ -z "$(git -C "$APP_DIR" status --porcelain 2>/dev/null)" ] &&
+    #
+    # Only tracked modifications count as local changes: every finished
+    # install puts pip's `pylib/` (and __pycache__) inside $APP_DIR, so a
+    # plain `git status --porcelain` is never empty and the heal refused
+    # forever. git itself still aborts the checkout rather than overwrite an
+    # untracked file it would clobber.
+    if [ -z "$(git -C "$APP_DIR" status --porcelain --untracked-files=no 2>/dev/null)" ] &&
        { git -C "$APP_DIR" remote set-url origin "$REPO" 2>/dev/null ||
          git -C "$APP_DIR" remote add origin "$REPO"; } &&
        git -C "$APP_DIR" fetch --depth 1 origin "$WANT_REF" &&
@@ -73,7 +79,15 @@ if [ -d "$APP_DIR/.git" ] && ! have_port_tree; then
        git -C "$APP_DIR" branch --set-upstream-to="origin/$WANT_REF"; then
         log "switched $APP_DIR to $WANT_REF (it was cloned without the port files)"
     else
-        die "$APP_DIR is a checkout without the OpenWrt port files and has either local changes or no $WANT_REF in $REPO - nothing was overwritten. Move it aside (mv $APP_DIR $APP_DIR.old) and re-run"
+        # Nothing here is worth keeping: it is upstream code that cannot run
+        # this port, plus runtime files. Move it aside (never delete) so the
+        # install can go on instead of stopping on a manual `mv` the user has
+        # to repeat on the router.
+        ASIDE="$APP_DIR.old.$(date +%Y%m%d%H%M%S 2>/dev/null || echo $$)"
+        mv "$APP_DIR" "$ASIDE" ||
+            die "cannot move $APP_DIR aside to $ASIDE - check free space and permissions"
+        log "moved the unusable checkout (no port files, or local changes) to $ASIDE - safe to delete"
+        log "cloning a fresh copy into $APP_DIR"
     fi
 fi
 

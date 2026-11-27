@@ -166,7 +166,21 @@ install_arch() {
 }
 
 install_openwrt() {
-    url="https://raw.githubusercontent.com/$REPO/$REF/scripts/install_openwrt.sh"
+    # The OpenWrt port lives on the Netrex-OpenWRT fork's openwrt-mips-port
+    # branch; $REPO/main carries the pre-port installer (installs into
+    # /opt/QuotaManager from requirements-linux). Fetch the installer from the
+    # same place the code will be cloned from, so a bare run cannot execute
+    # code that does not match the port. An explicit --repo/--ref wins.
+    port_repo=joyusufx/Netrex-OpenWRT
+    port_ref=openwrt-mips-port
+    if [ "$REPO" = "$DEFAULT_REPO" ] && [ "$REF" = "$DEFAULT_REF" ]; then
+        src_repo=$port_repo
+        src_ref=$port_ref
+    else
+        src_repo=$REPO
+        src_ref=$REF
+    fi
+    url="https://raw.githubusercontent.com/$src_repo/$src_ref/scripts/install_openwrt.sh"
     if ! fetch "$url" "$TMP/install_openwrt.sh"; then
         # A stock router may have no CA bundle yet, so https fails until it is
         # installed - which is a chicken-and-egg the installer below solves.
@@ -179,19 +193,10 @@ install_openwrt() {
         fetch "$url" "$TMP/install_openwrt.sh" \
             || die "cannot download $url - check the router's internet access, DNS and clock"
     fi
-    # The router installer clones the code itself. The OpenWrt port lives on
-    # the Netrex-OpenWRT fork's openwrt-mips-port branch, so if the caller left
-    # the defaults (the release repo, whose main is upstream code without the
-    # port) point the router installer at the port instead; an explicit
-    # --repo/--ref still wins.
-    port_url=https://github.com/joyusufx/Netrex-OpenWRT.git
-    port_ref=openwrt-mips-port
-    url=${NETREX_GIT_URL:-}
-    ref=${NETREX_REF:-}
-    if [ -z "$url" ] && [ "$REPO" = "$DEFAULT_REPO" ]; then url=$port_url; fi
-    if [ -z "$ref" ] && [ "$REF" = "$DEFAULT_REF" ]; then ref=$port_ref; fi
-    NETREX_GIT_URL=${url:-https://github.com/$REPO.git} \
-    NETREX_REF=${ref:-$REF} \
+    # Hand the resolved repo/ref to the installer; its own defaults agree, so
+    # this only pins them when the caller chose something else.
+    NETREX_GIT_URL="https://github.com/$src_repo.git" \
+    NETREX_REF=$src_ref \
         sh "$TMP/install_openwrt.sh"
 }
 

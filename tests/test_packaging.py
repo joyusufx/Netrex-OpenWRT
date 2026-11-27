@@ -707,7 +707,7 @@ def test_deps_ready_without_requirements_file_is_quiet(tmp_path):
     assert _run_deps_ready(tmp_path, installed=(), write_requirements=False) == "INSTALL"
 
 
-def _run_wrong_branch_heal(tmp_path, *, dirty):
+def _run_wrong_branch_heal(tmp_path, *, dirty, untracked=False):
     """Run the installer's stale-checkout healing block with a fake git."""
     text = _read(REPO / "scripts" / "install_openwrt.sh").replace("\r\n", "\n")
     start = text.index("have_port_tree() {")
@@ -719,7 +719,13 @@ def _run_wrong_branch_heal(tmp_path, *, dirty):
     fake.write_text(
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" >> "$GIT_LOG"\n'
-        'case "$3" in status) [ "$DIRTY" = 1 ] && echo " M run.py"; exit 0 ;; esac\n'
+        'case "$3" in\n'
+        "status)\n"
+        '  case "$*" in *--untracked-files=no*) UNTRACKED=0 ;; esac\n'
+        '  [ "$DIRTY" = 1 ] && echo " M run.py"\n'
+        '  [ "${UNTRACKED:-0}" = 1 ] && echo "?? pylib/"\n'
+        "  exit 0 ;;\n"
+        "esac\n"
         "exit 0\n")
     fake.chmod(0o755)
     app = tmp_path / "app"
@@ -733,9 +739,10 @@ def _run_wrong_branch_heal(tmp_path, *, dirty):
     r = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True,
                        timeout=30,
                        env={"PATH": f"{bindir}:/usr/bin:/bin", "GIT_LOG": str(git_log),
-                            "DIRTY": "1" if dirty else "0"})
+                            "DIRTY": "1" if dirty else "0",
+                            "UNTRACKED": "1" if untracked else "0"})
     calls = git_log.read_text().splitlines() if git_log.exists() else []
-    return r, calls
+    return r, calls, app
 
 
 def test_openwrt_installer_switches_a_main_checkout_to_the_port_branch(tmp_path):
@@ -743,7 +750,7 @@ def test_openwrt_installer_switches_a_main_checkout_to_the_port_branch(tmp_path)
     `main` (no requirements-openwrt.txt, so the app dies with
     FileNotFoundError). The installer must migrate that clean checkout to the
     port branch instead of reusing it."""
-    r, calls = _run_wrong_branch_heal(tmp_path / "clean", dirty=False)
+    r, calls, _app = _run_wrong_branch_heal(tmp_path / "clean", dirty=False)
     assert r.returncode == 0, r.stderr
     assert "switched" in r.stdout and "openwrt-mips-port" in r.stdout
     assert any("remote set-url origin https://example.invalid/fork.git" in c for c in calls)
@@ -751,11 +758,30 @@ def test_openwrt_installer_switches_a_main_checkout_to_the_port_branch(tmp_path)
     assert any("branch --set-upstream-to=origin/openwrt-mips-port" in c for c in calls)
 
 
-def test_openwrt_installer_never_clobbers_a_dirty_checkout(tmp_path):
-    r, calls = _run_wrong_branch_heal(tmp_path / "dirty", dirty=True)
-    assert r.returncode == 1
-    assert "nothing was overwritten" in r.stderr
-    assert not any("checkout -B" in c for c in calls)
+def test_openwrt_installer_heals_a_checkout_with_runtime_files(tmp_path):
+    """A finished install leaves pip's pylib/ (and __pycache__) inside the app
+    dir, so `git status --porcelain` is never empty on a router. Untracked
+    runtime files must not read as "local changes" and block the heal."""
+    r, calls, _app = _run_wrong_branch_heal(tmp_path / "runtime", dirty=False, untracked=True)
+    assert r.returncode == 0, r.stderr
+    assert "switched" in r.stdout
+    assert any("status --porcelain --untracked-files=no" in c for c in calls)
+    assert any("checkout -B openwrt-mips-port FETCH_HEAD" in c for c in calls)
+
+
+def test_openwrt_installer_preserves_a_dirty_checkout_and_installs(tmp_path):
+    """Edits to tracked files are never thrown away, but they must not stop the
+    install either: the unusable checkout is moved aside, intact, and a fresh
+    clone takes its place."""
+    r, calls, app = _run_wrong_branch_heal(tmp_path / "dirty", dirty=True)
+    assert r.returncode == 0, r.stderr
+    assert not any("checkout -B" in c for c in calls), "never checkout over local edits"
+    assert "moved the unusable checkout" in r.stdout
+    work = tmp_path / "dirty"
+    assert not app.exists(), "the install needs the path back for a fresh clone"
+    moved = list(work.glob("app.old.*"))
+    assert len(moved) == 1
+    assert (moved[0] / "run.py").read_text() == "# stale checkout of main\n"
 
 
 def test_openwrt_installer_refuses_a_tree_without_port_files(tmp_path):
@@ -923,7 +949,53 @@ def test_openwrt_installer_puts_the_database_on_flash(tmp_path):
     assert "moved off tmpfs" not in out
 
 
+def _run_get_openwrt(tmp_path, *, repo, ref):
+    """Run get.sh's install_openwrt() with fetch/sh stubbed out and report the
+    installer URL it downloads plus the repo/ref it hands to the installer."""
+    text = _read(REPO / "scripts" / "get.sh").replace("\r\n", "\n")
+    start = text.index("install_openwrt() {")
+    block = text[start:text.index("\n}\n", start) + len("\n}\n")]
+    log = tmp_path / f"log-{repo.replace('/', '_')}-{ref}"
+    runner = tmp_path / f"runner-{repo.replace('/', '_')}-{ref}.sh"
+    runner.write_text(
+        'log() { echo "LOG: $*" >> "$URL_LOG"; }\n'
+        'die() { echo "DIE: $*" >&2; exit 1; }\n'
+        'have() { return 1; }\n'
+        'fetch() { echo "FETCH: $1" >> "$URL_LOG"; return 0; }\n'
+        'sh() { printf "RUN: NETREX_GIT_URL=%s NETREX_REF=%s\\n" '
+        '"$NETREX_GIT_URL" "$NETREX_REF" >> "$URL_LOG"; }\n'
+        f"TMP='{tmp_path}'\n"
+        "DEFAULT_REPO=UserJoo9/Netrex\nDEFAULT_REF=main\n"
+        f"REPO='{repo}'\nREF='{ref}'\n" + block + "\ninstall_openwrt\n", encoding="utf-8")
+    r = subprocess.run(["/bin/sh", str(runner)], capture_output=True, text=True,
+                       timeout=30, env={"PATH": "/usr/bin:/bin", "URL_LOG": str(log)})
+    assert r.returncode == 0, r.stderr
+    return log.read_text().splitlines()
+
+
+def test_one_line_installer_fetches_the_port_installer(tmp_path):
+    """A bare `get.sh | sh` on a router must fetch the installer from the fork's
+    port branch. $DEFAULT_REPO/main still carries the pre-port installer
+    (installs into /opt/QuotaManager), so fetching from there runs code that
+    does not match the port - the failure users hit."""
+    out = _run_get_openwrt(tmp_path, repo="UserJoo9/Netrex", ref="main")
+    assert ("FETCH: https://raw.githubusercontent.com/joyusufx/Netrex-OpenWRT/"
+            "openwrt-mips-port/scripts/install_openwrt.sh") in out
+    assert ("RUN: NETREX_GIT_URL=https://github.com/joyusufx/Netrex-OpenWRT.git "
+            "NETREX_REF=openwrt-mips-port") in out
+
+
+def test_one_line_installer_keeps_an_explicit_repo_and_ref(tmp_path):
+    """--repo/--ref must still choose both the installer and the clone."""
+    out = _run_get_openwrt(tmp_path, repo="someone/patch", ref="test-branch")
+    assert ("FETCH: https://raw.githubusercontent.com/someone/patch/test-branch/"
+            "scripts/install_openwrt.sh") in out
+    assert ("RUN: NETREX_GIT_URL=https://github.com/someone/patch.git "
+            "NETREX_REF=test-branch") in out
+
+
 def test_one_line_installer_hands_off_to_the_platforms_own_path():
+
     """scripts/get.sh is the one entry point the README tells people to wget
     into a root shell: it must stay POSIX sh (BusyBox ash on a router, dash on
     Debian) and hand off to the installers that already exist instead of

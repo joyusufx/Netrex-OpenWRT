@@ -28,6 +28,8 @@ data/
 logs/
 leases/
 dnsmasq.d/
+# pip --target on OpenWrt installs the app's deps here (scripts/install_openwrt.sh)
+pylib/
 *.db
 *.sqlite3
 *.db-wal
