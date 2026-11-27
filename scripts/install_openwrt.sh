@@ -98,8 +98,34 @@ python3 -m pip install --no-input --no-compile --target "$PYLIB" \
 # from the lease file, so no device is charged and no quota can cut it.
 LAN_IP=$(uci -q get network.lan.ipaddr 2>/dev/null || true)
 LAN_MASK=$(uci -q get network.lan.netmask 2>/dev/null || true)
-LAN_IP=${LAN_IP:-192.168.1.1}
-LAN_MASK=${LAN_MASK:-255.255.255.0}
+# uci can return a list ("a.b.c.d/24 e.f.g.h/24", several addresses or a second
+# bridge) and may store CIDR instead of a bare address. Keep the first token,
+# drop any /prefix, and only accept a real dotted quad — this value goes into
+# the config (dhcp.gateway_ip) and the printed dashboard URL.
+LAN_IP=${LAN_IP%% *}
+LAN_IP=${LAN_IP%%/*}
+case "$LAN_IP" in
+    *[!0-9.]*|*..*|[0-9]*.*.*.*.[!0-9]*|*[!0-9].*.*.*|[!0-9]*|*.[!0-9])
+        LAN_IP=192.168.1.1 ;;
+    *.*.*.*) ;;
+    *) LAN_IP=192.168.1.1 ;;
+esac
+case "$LAN_MASK" in
+    *.*.*) ;;
+    */*) : ;;  # CIDR netmask handled below
+    *) LAN_MASK=255.255.255.0 ;;
+esac
+case "$LAN_MASK" in
+    */8)  LAN_MASK=255.0.0.0 ;;
+    */16) LAN_MASK=255.255.0.0 ;;
+    */24) LAN_MASK=255.255.255.0 ;;
+    */25) LAN_MASK=255.255.255.128 ;;
+    */26) LAN_MASK=255.255.255.192 ;;
+    */27) LAN_MASK=255.255.255.224 ;;
+    */28) LAN_MASK=255.255.255.240 ;;
+    */29) LAN_MASK=255.255.255.248 ;;
+    */30) LAN_MASK=255.255.255.252 ;;
+esac
 case "$LAN_IP" in
     *.*.*.*) LAN_PREFIX=$(echo "$LAN_IP" | cut -d. -f1-3)
              ;;
@@ -173,6 +199,16 @@ if [ ! -f "$CONF_DIR/config.yaml" ]; then
 else
     log "existing $CONF_DIR/config.yaml kept — check dhcp.gateway_ip,"
     log "dhcp.pool_start/pool_end and dhcp.lease_file match this router"
+    # An older run of this installer could have written a mangled address
+    # (a uci list like "192.168.2.1/24 192.168.1.110/24") into gateway_ip.
+    # Repair only a value that is not a plain dotted quad.
+    CUR_GW=$(awk '/^  gateway_ip:/{print $2; exit}' "$CONF_DIR/config.yaml")
+    case "$CUR_GW" in
+        [0-9]*.*.*.[0-9]) ;;
+        *) set_dhcp gateway_ip "$LAN_IP"
+           set_dhcp router_ip "$LAN_IP"
+           log "repaired dhcp.gateway_ip -> $LAN_IP (was: ${CUR_GW:-empty})" ;;
+    esac
 fi
 
 cp "$APP_DIR/scripts/quota-manager.openwrt" /etc/init.d/quota-manager
