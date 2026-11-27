@@ -86,8 +86,63 @@ fi
 # pip --target installs the router deps beside the code; no venv (no
 # ensurepip) and never requirements-linux.txt (needs compiled wheels).
 mkdir -p "$PYLIB"
-python3 -m pip install --no-input --no-compile --target "$PYLIB" \
-    -r "$APP_DIR/requirements-openwrt.txt"
+# pydantic 1.10 is the only fastapi line with pure-Python wheels for MIPS, and
+# it does not run on Python 3.14 ("Core Pydantic V1 functionality isn't
+# compatible with Python 3.14 or greater" -> ConfigError at import). OpenWrt
+# master ships 3.14, so pick an interpreter <=3.13 and use it for pip AND for
+# the service; otherwise run.py dies at import and procd respawns it forever
+# while the dashboard never answers. Override with NETREX_PYTHON=/usr/bin/...
+pick_python() {
+    for cand in ${NETREX_PYTHON:-} python3.13 python3.12 python3.11 python3.10 python3.9 python3; do
+        [ -n "$cand" ] || continue
+        found=$(command -v "$cand" 2>/dev/null) || continue
+        if "$found" -c 'import sys; raise SystemExit(0 if (3, 9) <= sys.version_info < (3, 14) else 1)' 2>/dev/null; then
+            echo "$found"
+            return 0
+        fi
+    done
+    return 1
+}
+PYTHON=$(pick_python) || die "no pydantic-v1 compatible Python: pydantic 1.10 (the only version with MIPS wheels) needs Python 3.9-3.13, but none was found (system python3: $(command -v python3 >/dev/null 2>&1 && python3 -V 2>&1 || echo missing)). Install a 3.13 interpreter (python3 package from the OpenWrt 25.12 feed) or set NETREX_PYTHON=/path/to/python3.x and re-run"
+log "python: $PYTHON ($("$PYTHON" -V 2>&1))"
+mkdir -p "$CONF_DIR"
+printf '%s\n' "$PYTHON" > "$CONF_DIR/python"
+# A re-run used to reinstall everything: pip resolves the whole dependency
+# graph in pure Python, which is the slowest step on a router. Skip it when
+# pylib already holds every pin at its exact version. pip writes dist-info
+# last, so a half-finished install fails this check and is repaired below;
+# --upgrade with new pins changes the file and also reinstalls.
+deps_ready() {
+    PYTHONPATH="$PYLIB" "$PYTHON" - "$APP_DIR/requirements-openwrt.txt" <<'PY'
+import sys
+try:
+    from importlib import metadata
+except ImportError:
+    sys.exit(1)
+want = []
+for raw in open(sys.argv[1], encoding="utf-8"):
+    line = raw.split("#", 1)[0].strip()
+    if "==" not in line:
+        continue
+    name, ver = (p.strip() for p in line.split("==", 1))
+    want.append((name, ver))
+if not want:
+    sys.exit(1)
+for name, ver in want:
+    try:
+        have = metadata.version(name)
+    except metadata.PackageNotFoundError:
+        sys.exit(1)
+    if have != ver:
+        sys.exit(1)
+PY
+}
+if deps_ready; then
+    log "python deps already installed in $PYLIB - skipping pip"
+else
+    "$PYTHON" -m pip install --no-input --no-compile --target "$PYLIB" \
+        -r "$APP_DIR/requirements-openwrt.txt"
+fi
 
 # Seed the config once; an existing admin config always wins.
 #

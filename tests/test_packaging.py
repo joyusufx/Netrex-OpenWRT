@@ -472,6 +472,87 @@ def test_openwrt_installer_supports_apk_and_opkg():
     assert ".venv" not in init, "no venv on a router: OpenWrt python3 has no ensurepip"
     assert "PYTHONPATH" in init and "pylib" in init, "deps installed with pip --target"
     assert "procd" in init, "procd service, not systemd"
+    assert "/etc/quota-gateway/python" in init, "service must use the pinned interpreter"
+    installer = _read(REPO / "scripts" / "install_openwrt.sh")
+    assert '> "$CONF_DIR/python"' in installer, "installer records the validated interpreter"
+
+
+def _run_deps_ready(tmp_path, *, installed):
+    """Run the installer's python-deps check for real against a fake pylib."""
+    text = _read(REPO / "scripts" / "install_openwrt.sh").replace("\r\n", "\n")
+    start = text.index("deps_ready() {")
+    fragment = text[start:text.index("\n}\n", start) + 3]
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    pins = {"demo-one": "1.2.3", "demo-two": "4.5.6"}
+    (tmp_path / "requirements-openwrt.txt").write_text(
+        "".join(f"{n}=={v}\n" for n, v in pins.items()))
+    pylib = tmp_path / "pylib"
+    pylib.mkdir()
+    for name in installed:
+        ver = pins[name]
+        info = pylib / f"{name.replace('-', '_')}-{ver}.dist-info"
+        info.mkdir()
+        (info / "METADATA").write_text(
+            f"Metadata-Version: 2.1\nName: {name}\nVersion: {ver}\n")
+        (info / "RECORD").write_text("")
+    script = tmp_path / "step.sh"
+    script.write_text(fragment + "\nif deps_ready; then echo SKIP; else echo INSTALL; fi\n")
+    r = subprocess.run(
+        ["/bin/sh", str(script)], capture_output=True, text=True, timeout=30,
+        env={"APP_DIR": str(tmp_path), "PYLIB": str(pylib), "PYTHON": "python3",
+             "PATH": "/usr/bin:/bin"})
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+
+
+def test_openwrt_installer_skips_pip_when_python_deps_are_installed(tmp_path):
+    """A re-run must not reinstall pylib: pip resolves the graph in pure Python,
+    the slowest step on a router. Any missing or wrong-version pin still
+    installs, so a new requirements file (or a half-finished run) heals."""
+    assert _run_deps_ready(tmp_path / "full", installed=("demo-one", "demo-two")) == "SKIP"
+    assert _run_deps_ready(tmp_path / "missing", installed=("demo-one",)) == "INSTALL"
+    assert _run_deps_ready(tmp_path / "empty", installed=()) == "INSTALL"
+
+
+def _run_pick_python(tmp_path, bins, override=""):
+    """Run the installer's interpreter picker with fake python3.X binaries."""
+    text = _read(REPO / "scripts" / "install_openwrt.sh").replace("\r\n", "\n")
+    start = text.index("pick_python() {")
+    fragment = text[start:text.index("\n}\n", start) + 3]
+    bindir = tmp_path / "bin"
+    bindir.mkdir(parents=True)
+    for name, ok in bins.items():
+        p = bindir / name
+        p.write_text("#!/bin/sh\nexit %d\n" % (0 if ok else 1))
+        p.chmod(0o755)
+    script = tmp_path / "pick.sh"
+    script.write_text(
+        "set -eu\n" + fragment
+        + '\nif p=$(pick_python); then echo "$p"; else echo NONE; fi\n')
+    r = subprocess.run(
+        ["/bin/sh", str(script)], capture_output=True, text=True, timeout=30,
+        env={"PATH": str(bindir), "NETREX_PYTHON": override})
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+
+
+def test_openwrt_installer_pins_a_pydantic_v1_compatible_python(tmp_path):
+    """pydantic 1.10 (the only line with MIPS wheels) dies at import on Python
+    3.14, which OpenWrt master ships: uvicorn never binds and the dashboard
+    silently stays down. The installer must pick an interpreter <=3.13, honour
+    NETREX_PYTHON, and refuse loudly when only 3.14 is available."""
+    out = _run_pick_python(tmp_path / "thirteen",
+                           {"python3.13": True, "python3": False})
+    assert out.endswith("/python3.13")
+    out = _run_pick_python(tmp_path / "override",
+                           {"python3": False, "custom-py": True},
+                           override="custom-py")
+    assert out.endswith("/custom-py")
+    out = _run_pick_python(tmp_path / "only314",
+                           {"python3.13": False, "python3.12": False,
+                            "python3.11": False, "python3.10": False,
+                            "python3.9": False, "python3": False})
+    assert out == "NONE"
 
 
 def _run_checkout_step(tmp_path, *, has_git, has_code, upgrade):

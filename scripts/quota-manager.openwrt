@@ -13,7 +13,10 @@ USE_PROCD=1
 START=95
 STOP=10
 
-PROG="/usr/bin/python3"
+# The installer writes the interpreter it validated (pydantic 1.10 needs
+# Python <=3.13; OpenWrt master ships 3.14) to /etc/quota-gateway/python.
+PROG="$(cat /etc/quota-gateway/python 2>/dev/null)"
+[ -n "$PROG" ] && [ -x "$PROG" ] || PROG="/usr/bin/python3"
 APP_DIR="/opt/quota-manager"
 CONF="/etc/quota-gateway/config.yaml"
 
