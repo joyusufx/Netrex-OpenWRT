@@ -92,11 +92,13 @@ _register(Preset(
     description=("Aggressive multi-engine blocklist: blocks web banners, video pre-rolls, "
                  "mobile app ads, popups, smart TV telemetry, and tracking networks."),
     urls=[
-        "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/hosts/pro.txt",
+        # hagezi dropped the hosts/ folder; adblock/pro.txt is the maintained
+        # ABP-shaped file (verified 2026-11: hosts/pro.txt -> HTTP 404).
+        "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt",
         "https://raw.githubusercontent.com/anudeepND/blacklist/master/adservers.txt",
         "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
     ],
-    format="hosts",
+    format="auto",  # sources mix ABP (hagezi) and hosts (the other two)
 ))
 _register(Preset(
     id="ads-tracking",

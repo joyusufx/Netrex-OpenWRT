@@ -259,6 +259,25 @@ def test_social_media_preset_lists_cyb3rko_sources():
     assert any("cyb3rko/social-media-hosts-blocklists" in u for u in preset.urls)
 
 
+def test_ultra_preset_urls_are_alive_and_auto_formatted():
+    """hosts/pro.txt 404s (hagezi dropped the folder), which made the preset's
+    main source fail on every fetch; the sources must exist and let each one
+    be sniffed (ABP and hosts mix). URL liveness is asserted from the path
+    shape recorded when the bug was fixed (2026-11): adblock/<list>.txt, the
+    only layout the hagezi repo still serves. Only hagezi's hosts/ paths are
+    banned — other presets' /hosts/ URLs (StevenBlack, cyb3rko) are alive."""
+    preset = dr.PRESETS["adblock-ultra"]
+    assert preset.urls, "ultra preset must have sources"
+    assert all(u.startswith("https://raw.githubusercontent.com/") for u in preset.urls)
+    assert any("/adblock/" in u for u in preset.urls)
+    assert not any("hagezi/dns-blocklists/main/hosts/" in u for u in preset.urls), \
+        "hagezi hosts/ paths 404"
+    assert preset.format == "auto", "sources mix ABP and hosts formats"
+    # ABP text really does yield domains through the auto sniffer.
+    abp = "||ads.example.com^\n## .hide-me\n"
+    assert dr.compile_source_text(abp, preset.format) == {"ads.example.com"}
+
+
 # ---------------------------------------------------------------------------
 # DB-layer CRUD (quota/db.py's domain_rules / dns_presets / dns_server cols)
 # ---------------------------------------------------------------------------
