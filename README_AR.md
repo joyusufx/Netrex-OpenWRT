@@ -105,7 +105,7 @@
 </div>
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/joyusufx/Netrex-OpenWRT/openwrt-mips-port/scripts/get.sh | sh
+wget -qO- https://raw.githubusercontent.com/joyusufx/Netrex-OpenWRT/openwrt-mips-port/scripts/get.sh | NETREX_REPO=joyusufx/Netrex-OpenWRT NETREX_REF=openwrt-mips-port sh
 ```
 
 <div dir="rtl">

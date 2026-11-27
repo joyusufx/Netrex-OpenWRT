@@ -12,7 +12,7 @@ setup is one command.
 sh install_openwrt.sh          # from the release tarball root, or scripts/
 
 # or in one line, without the tarball (POSIX sh, runs under ash):
-wget -qO- https://raw.githubusercontent.com/joyusufx/Netrex-OpenWRT/openwrt-mips-port/scripts/get.sh | sh
+wget -qO- https://raw.githubusercontent.com/joyusufx/Netrex-OpenWRT/openwrt-mips-port/scripts/get.sh | NETREX_REPO=joyusufx/Netrex-OpenWRT NETREX_REF=openwrt-mips-port sh
 ```
 
 `scripts/get.sh` detects OpenWrt and runs this installer; on a fork or branch,

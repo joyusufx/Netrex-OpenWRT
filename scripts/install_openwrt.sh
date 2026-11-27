@@ -50,6 +50,23 @@ else
     die "neither apk nor opkg found - is this OpenWrt?"
 fi
 
+have_port_tree() { [ -f "$APP_DIR/run.py" ] && [ -f "$APP_DIR/requirements-openwrt.txt" ]; }
+
+if [ -d "$APP_DIR/.git" ] && ! have_port_tree; then
+    # A pre-fix install cloned the remote's default branch (main = upstream
+    # code), which has no requirements-openwrt.txt; reusing it made the app
+    # die at startup with FileNotFoundError. Switch that checkout to the port
+    # branch instead, and never clobber local edits.
+    WANT_REF=${REF:-openwrt-mips-port}
+    if [ -z "$(git -C "$APP_DIR" status --porcelain 2>/dev/null)" ] &&
+       git -C "$APP_DIR" fetch --depth 1 origin "$WANT_REF" &&
+       git -C "$APP_DIR" checkout -B "$WANT_REF" FETCH_HEAD; then
+        log "switched $APP_DIR to $WANT_REF (it was cloned without the port files)"
+    else
+        die "$APP_DIR is a checkout without the OpenWrt port files (wrong branch) and either has local changes or the fetch failed - nothing was overwritten. Move it aside (mv $APP_DIR $APP_DIR.old) and re-run"
+    fi
+fi
+
 if [ -d "$APP_DIR/.git" ] || [ -f "$APP_DIR/run.py" ]; then
     # The code is already on disk - a git checkout, or a tree copied over by
     # hand / from a tarball: keep it and skip the download so a re-run works
@@ -92,6 +109,8 @@ else
     fi
 fi
 
+have_port_tree || die "$APP_DIR has no requirements-openwrt.txt: that is the non-port branch (main), so the app would fail at startup with FileNotFoundError. Re-run with NETREX_REF=openwrt-mips-port, or remove $APP_DIR so the installer clones the right branch"
+
 # MIPS routers have no Rust/C toolchain: requirements-openwrt.txt is pinned to
 # pure-Python wheels (fastapi 0.115 + pydantic 1.10, plain uvicorn). Dev-only
 # packages (pytest, httpx, pyflakes, aiohttp, webauthn) are never installed
@@ -126,6 +145,7 @@ printf '%s\n' "$PYTHON" > "$CONF_DIR/python"
 # last, so a half-finished install fails this check and is repaired below;
 # --upgrade with new pins changes the file and also reinstalls.
 deps_ready() {
+    [ -f "$APP_DIR/requirements-openwrt.txt" ] || return 1
     PYTHONPATH="$PYLIB" "$PYTHON" - "$APP_DIR/requirements-openwrt.txt" <<'PY'
 import sys
 try:

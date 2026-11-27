@@ -477,15 +477,16 @@ def test_openwrt_installer_supports_apk_and_opkg():
     assert '> "$CONF_DIR/python"' in installer, "installer records the validated interpreter"
 
 
-def _run_deps_ready(tmp_path, *, installed):
+def _run_deps_ready(tmp_path, *, installed, write_requirements=True):
     """Run the installer's python-deps check for real against a fake pylib."""
     text = _read(REPO / "scripts" / "install_openwrt.sh").replace("\r\n", "\n")
     start = text.index("deps_ready() {")
     fragment = text[start:text.index("\n}\n", start) + 3]
     tmp_path.mkdir(parents=True, exist_ok=True)
     pins = {"demo-one": "1.2.3", "demo-two": "4.5.6"}
-    (tmp_path / "requirements-openwrt.txt").write_text(
-        "".join(f"{n}=={v}\n" for n, v in pins.items()))
+    if write_requirements:
+        (tmp_path / "requirements-openwrt.txt").write_text(
+            "".join(f"{n}=={v}\n" for n, v in pins.items()))
     pylib = tmp_path / "pylib"
     pylib.mkdir()
     for name in installed:
@@ -559,6 +560,8 @@ def _run_checkout_step(tmp_path, *, has_git, has_code, upgrade):
     """Run the router installer's 'repo already there?' block for real, with a
     fake `git` that only records its arguments."""
     text = _read(REPO / "scripts" / "install_openwrt.sh").replace("\r\n", "\n")
+    fn_at = text.index("have_port_tree() {")
+    fn_line = text[fn_at:text.index("\n", fn_at)]
     start = text.index('if [ -d "$APP_DIR/.git" ] || [ -f "$APP_DIR/run.py" ]; then')
     fragment = text[start:text.index("# MIPS routers have no Rust/C toolchain")]
     app = tmp_path / "app"
@@ -567,16 +570,25 @@ def _run_checkout_step(tmp_path, *, has_git, has_code, upgrade):
         (app / ".git").mkdir()
     if has_code:
         (app / "run.py").write_text("")
+        (app / "requirements-openwrt.txt").write_text("")
     bindir = tmp_path / "bin"
     bindir.mkdir(parents=True, exist_ok=True)
     calls = tmp_path / "git.log"
     calls.write_text("")
     git = bindir / "git"
-    git.write_text(f'#!/bin/sh\nfor a in "$@"; do echo "$a" >> "{calls}"; done\nexit 0\n')
+    git.write_text(
+        '#!/bin/sh\n'
+        f'for a in "$@"; do echo "$a" >> "{calls}"; done\n'
+        'last=""; for a in "$@"; do last="$a"; done\n'
+        'if [ "$1" = clone ]; then mkdir -p "$last"; : > "$last/run.py"; '
+        ': > "$last/requirements-openwrt.txt"; fi\n'
+        "exit 0\n")
     git.chmod(0o755)
     script = tmp_path / "step.sh"
     script.write_text(
         "log() { echo \"[netrex] $*\"; }\n"
+        'die() { echo "[netrex] ERROR: $*" >&2; exit 1; }\n'
+        + fn_line + "\n"
         f"APP_DIR='{app}'\nUPGRADE={upgrade}\nREPO=https://example.invalid/x.git\nREF=\n"
         "set -eu\n" + fragment)
     r = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True,
@@ -686,6 +698,87 @@ def test_openwrt_reinstall_never_rewrites_an_existing_config(tmp_path):
         tmp_path, {"network.lan.ipaddr": "192.168.8.1"}, existing=sentinel)
     assert kept == sentinel
     assert "existing" in out and "kept" in out
+
+
+def test_deps_ready_without_requirements_file_is_quiet(tmp_path):
+    """A checkout from the non-port branch has no requirements-openwrt.txt; the
+    check must return "not ready" instead of raising FileNotFoundError, so the
+    installer reaches its own clear error rather than a traceback."""
+    assert _run_deps_ready(tmp_path, installed=(), write_requirements=False) == "INSTALL"
+
+
+def _run_wrong_branch_heal(tmp_path, *, dirty):
+    """Run the installer's stale-checkout healing block with a fake git."""
+    text = _read(REPO / "scripts" / "install_openwrt.sh").replace("\r\n", "\n")
+    start = text.index("have_port_tree() {")
+    block = text[start:text.index('\nif [ -d "$APP_DIR/.git" ] ||', start)]
+    bindir = tmp_path / "bin"
+    bindir.mkdir(parents=True)
+    git_log = tmp_path / "git.log"
+    fake = bindir / "git"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$GIT_LOG"\n'
+        'case "$3" in status) [ "$DIRTY" = 1 ] && echo " M run.py"; exit 0 ;; esac\n'
+        "exit 0\n")
+    fake.chmod(0o755)
+    app = tmp_path / "app"
+    (app / ".git").mkdir(parents=True)
+    (app / "run.py").write_text("# stale checkout of main\n")
+    script = tmp_path / "heal.sh"
+    script.write_text(
+        'log() { echo "LOG: $*"; }\n'
+        'die() { echo "DIE: $*" >&2; exit 1; }\n'
+        f"APP_DIR='{app}'\nREF=\n" + block)
+    r = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True,
+                       timeout=30,
+                       env={"PATH": f"{bindir}:/usr/bin:/bin", "GIT_LOG": str(git_log),
+                            "DIRTY": "1" if dirty else "0"})
+    calls = git_log.read_text().splitlines() if git_log.exists() else []
+    return r, calls
+
+
+def test_openwrt_installer_switches_a_main_checkout_to_the_port_branch(tmp_path):
+    """An install made before the --branch fix reused /opt/quota-manager from
+    `main` (no requirements-openwrt.txt, so the app dies with
+    FileNotFoundError). The installer must migrate that clean checkout to the
+    port branch instead of reusing it."""
+    r, calls = _run_wrong_branch_heal(tmp_path / "clean", dirty=False)
+    assert r.returncode == 0, r.stderr
+    assert "switched" in r.stdout and "openwrt-mips-port" in r.stdout
+    assert any("checkout -B openwrt-mips-port FETCH_HEAD" in c for c in calls)
+
+
+def test_openwrt_installer_never_clobbers_a_dirty_checkout(tmp_path):
+    r, calls = _run_wrong_branch_heal(tmp_path / "dirty", dirty=True)
+    assert r.returncode == 1
+    assert "nothing was overwritten" in r.stderr
+    assert not any("checkout -B" in c for c in calls)
+
+
+def test_openwrt_installer_refuses_a_tree_without_port_files(tmp_path):
+    """After clone/pull, a tree without requirements-openwrt.txt is the wrong
+    branch: stop with the NETREX_REF instruction, not a traceback later."""
+    text = _read(REPO / "scripts" / "install_openwrt.sh").replace("\r\n", "\n")
+    fn_at = text.index("have_port_tree() {")
+    guard_at = text.index("have_port_tree || die")
+    script_text = (text[fn_at:text.index("\n", fn_at)] + "\n"
+                   + text[guard_at:text.index("\n", guard_at)])
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "run.py").write_text("x")
+    script = tmp_path / "guard.sh"
+    script.write_text('die() { echo "DIE: $*" >&2; exit 1; }\n'
+                      f"APP_DIR='{app}'\n" + script_text)
+    r = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True,
+                       timeout=30, env={"PATH": "/usr/bin:/bin"})
+    assert r.returncode == 1
+    assert "NETREX_REF=openwrt-mips-port" in r.stderr
+    # and a real port tree passes the guard untouched
+    (app / "requirements-openwrt.txt").write_text("")
+    r = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True,
+                       timeout=30, env={"PATH": "/usr/bin:/bin"})
+    assert r.returncode == 0 and r.stderr == ""
 
 
 def _run_clone_step(tmp_path, *, ref, clone_ok=True):

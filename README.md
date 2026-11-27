@@ -95,7 +95,7 @@ You need OpenWrt 22.03+ with 128 MB+ RAM (on small-flash routers, use a USB driv
 Run this in the router's root shell (OpenWrt has no `sudo`):
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/joyusufx/Netrex-OpenWRT/openwrt-mips-port/scripts/get.sh | sh
+wget -qO- https://raw.githubusercontent.com/joyusufx/Netrex-OpenWRT/openwrt-mips-port/scripts/get.sh | NETREX_REPO=joyusufx/Netrex-OpenWRT NETREX_REF=openwrt-mips-port sh
 ```
 
 It hands off to the router installer, which installs the dependencies (python3, pip, nftables, kmod-nft-core, kmod-tun, kmod-ifb, tc, ip-full, dnsmasq-full, git-http, ca-bundle, python3-yaml, python3-websockets, conntrack), clones the code into `/opt/quota-manager`, installs the Python deps with `pip --target`, writes `/etc/quota-gateway/config.yaml` if it is missing, and registers and starts the procd service `/etc/init.d/quota-manager`.
