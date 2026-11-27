@@ -12,6 +12,7 @@ Nothing here shells out — every check is file contents / metadata.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -604,6 +605,55 @@ def test_openwrt_reinstall_never_rewrites_an_existing_config(tmp_path):
         tmp_path, {"network.lan.ipaddr": "192.168.8.1"}, existing=sentinel)
     assert kept == sentinel
     assert "existing" in out and "kept" in out
+
+
+def test_openwrt_installer_puts_the_database_on_flash(tmp_path):
+    """Devices, rules and usage all live at db_path, and the firewall config is
+    written beside it. config.yaml ships the Debian path /var/lib/..., but on a
+    router /var is a tmpfs symlink: the database was wiped at every reboot, so
+    nothing "saved". The seed must point db_path at the flash-backed CONF_DIR,
+    and an existing config still pointing into tmpfs must be corrected once,
+    with the old database moved over."""
+    out, seeded = _run_config_seed_step(tmp_path, {})
+    assert f"db_path: {tmp_path / 'conf' / 'quota.db'}" in seeded
+    assert "/var/lib" not in seeded
+
+    # an existing install whose data still sits in tmpfs: rewrite + carry over
+    conf = tmp_path / "fix" / "conf"
+    old_dir = tmp_path / "fix" / "varlib"
+    existing = ("db_path: /var/lib/quota-gateway/quota.db\n"
+                "dhcp:\n  gateway_ip: 10.0.0.1\n")
+    out, fixed = _run_config_seed_step(
+        tmp_path / "fix", {}, existing=existing)
+    assert f"db_path: {conf / 'quota.db'}" in fixed
+    assert "db_path moved off tmpfs" in out
+
+    # ... and the real move is exercised with the old files in place: the db_path
+    # line decides what is moved, so a /tmp state dir stands in for the tmpfs
+    import tempfile
+    old_dir = Path(tempfile.mkdtemp(prefix="netrex-tmpfs-"))
+    existing = f"db_path: {old_dir}/quota.db\n"
+    (old_dir / "quota.db").write_bytes(b"old")
+    (old_dir / "firewall_config.json").write_text("{}")
+    (old_dir / "ip-owners.json").write_text("{}")
+    (old_dir / "firewall_snapshots").mkdir()
+    try:
+        out, fixed = _run_config_seed_step(tmp_path / "fix2", {}, existing=existing)
+        assert f"db_path: {tmp_path / 'fix2' / 'conf' / 'quota.db'}" in fixed
+        conf2 = tmp_path / "fix2" / "conf"
+        assert (conf2 / "quota.db").read_bytes() == b"old"
+        assert (conf2 / "firewall_config.json").read_text() == "{}"
+        assert (conf2 / "ip-owners.json").is_file()
+        assert (conf2 / "firewall_snapshots").is_dir()
+        assert not (old_dir / "quota.db").exists()
+    finally:
+        shutil.rmtree(old_dir, ignore_errors=True)
+
+    # an existing config already on flash (or without a db_path line) is kept
+    out, kept = _run_config_seed_step(
+        tmp_path / "keep", {}, existing="db_path: /etc/quota-gateway/quota.db\n")
+    assert kept == "db_path: /etc/quota-gateway/quota.db\n"
+    assert "moved off tmpfs" not in out
 
 
 def test_one_line_installer_hands_off_to_the_platforms_own_path():

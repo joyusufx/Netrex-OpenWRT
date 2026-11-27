@@ -115,6 +115,7 @@ exec. Asset selection:
 |---|---|---|
 | Service control | systemd units | procd init scripts (`svcmgr`) |
 | dnsmasq config | `/etc/dnsmasq.d/` | `/tmp/dnsmasq.d/` (not flash-backed) |
+| Database (`db_path`) | `/var/lib/quota-gateway/quota.db` | `/etc/quota-gateway/quota.db` (on flash — `/var` is a tmpfs symlink wiped at reboot) |
 | WAN control | `systemctl restart networking` | `ifup wan` via ubus/netifd |
 | samba (file share) | `smbd` unit, `samba` package | `samba4` init script + package |
 | Tailscale | systemd unit | `tailscale` init script, `pidof tailscaled` |

@@ -101,18 +101,52 @@ if [ -n "$DHCP_START" ] && [ -n "$DHCP_LIMIT" ]; then
     POOL_END="${LAN_PREFIX}.$((DHCP_START + DHCP_LIMIT))"
 fi
 mkdir -p "$CONF_DIR"
+# set_dhcp <key> <value>: rewrite the first `<key>:` line, keep comments.
+set_dhcp() {
+    awk -v k="$1" -v v="$2" '
+        !done && index($0, "  " k ": ") == 1 {
+            print "  " k ": " v; done = 1; next
+        }
+        { print }
+    ' "$CONF_DIR/config.yaml" > "$CONF_DIR/config.yaml.tmp" &&
+        mv "$CONF_DIR/config.yaml.tmp" "$CONF_DIR/config.yaml"
+}
+# set_top <key> <value>: the same, for a top-level (column 1) key.
+set_top() {
+    awk -v k="$1" -v v="$2" '
+        !done && index($0, k ": ") == 1 {
+            print k ": " v; done = 1; next
+        }
+        { print }
+    ' "$CONF_DIR/config.yaml" > "$CONF_DIR/config.yaml.tmp" &&
+        mv "$CONF_DIR/config.yaml.tmp" "$CONF_DIR/config.yaml"
+}
+# The whole database (devices, users, rules, usage) lives at db_path, and the
+# firewall config + IP-owner cache are written beside it. config.yaml ships the
+# Debian path /var/lib/quota-gateway/quota.db, but on OpenWrt /var is a symlink
+# into /tmp (tmpfs): wiped at every reboot, which looked like "rules and
+# devices do not save". The database must sit on the flash overlay instead.
+DB_PATH="$CONF_DIR/quota.db"
+if [ -f "$CONF_DIR/config.yaml" ] &&
+   grep -qE '^db_path: */(var/lib|tmp)/' "$CONF_DIR/config.yaml"; then
+    OLD_DB=$(awk '/^db_path:/{print $2; exit}' "$CONF_DIR/config.yaml")
+    set_top db_path "$DB_PATH"
+    if [ -f "$OLD_DB" ] && [ ! -f "$DB_PATH" ]; then
+        mkdir -p "$(dirname "$DB_PATH")"
+        mv "$OLD_DB" "$DB_PATH"
+        for f in ip-owners.json firewall_config.json; do
+            [ -f "$(dirname "$OLD_DB")/$f" ] &&
+                mv "$(dirname "$OLD_DB")/$f" "$(dirname "$DB_PATH")/$f"
+        done
+        [ -d "$(dirname "$OLD_DB")/firewall_snapshots" ] &&
+            mv "$(dirname "$OLD_DB")/firewall_snapshots" \
+               "$(dirname "$DB_PATH")/firewall_snapshots"
+    fi
+    log "db_path moved off tmpfs: $DB_PATH (survives reboot)"
+fi
 if [ ! -f "$CONF_DIR/config.yaml" ]; then
     cp "$APP_DIR/config.yaml" "$CONF_DIR/config.yaml"
-    # set_dhcp <key> <value>: rewrite the first `<key>:` line, keep comments.
-    set_dhcp() {
-        awk -v k="$1" -v v="$2" '
-            !done && index($0, "  " k ": ") == 1 {
-                print "  " k ": " v; done = 1; next
-            }
-            { print }
-        ' "$CONF_DIR/config.yaml" > "$CONF_DIR/config.yaml.tmp" &&
-            mv "$CONF_DIR/config.yaml.tmp" "$CONF_DIR/config.yaml"
-    }
+    set_top db_path "$DB_PATH"
     set_dhcp lease_file /tmp/dhcp.leases
     set_dhcp gateway_ip "$LAN_IP"
     set_dhcp router_ip "$LAN_IP"
