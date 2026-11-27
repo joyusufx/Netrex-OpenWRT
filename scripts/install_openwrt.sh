@@ -58,12 +58,20 @@ if [ -d "$APP_DIR/.git" ] && ! have_port_tree; then
     # die at startup with FileNotFoundError. Switch that checkout to the port
     # branch instead, and never clobber local edits.
     WANT_REF=${REF:-openwrt-mips-port}
+    # Fetch from the repo we are installing, not from `origin`: a pre-fix
+    # install has origin = UserJoo9/Netrex (upstream), which has no
+    # openwrt-mips-port ref, so "fetch origin $WANT_REF" dies with
+    # "couldn't find remote ref". Repoint origin afterwards so --upgrade's
+    # `git pull --ff-only` keeps tracking the port branch.
     if [ -z "$(git -C "$APP_DIR" status --porcelain 2>/dev/null)" ] &&
+       { git -C "$APP_DIR" remote set-url origin "$REPO" 2>/dev/null ||
+         git -C "$APP_DIR" remote add origin "$REPO"; } &&
        git -C "$APP_DIR" fetch --depth 1 origin "$WANT_REF" &&
-       git -C "$APP_DIR" checkout -B "$WANT_REF" FETCH_HEAD; then
+       git -C "$APP_DIR" checkout -B "$WANT_REF" FETCH_HEAD &&
+       git -C "$APP_DIR" branch --set-upstream-to="origin/$WANT_REF"; then
         log "switched $APP_DIR to $WANT_REF (it was cloned without the port files)"
     else
-        die "$APP_DIR is a checkout without the OpenWrt port files (wrong branch) and either has local changes or the fetch failed - nothing was overwritten. Move it aside (mv $APP_DIR $APP_DIR.old) and re-run"
+        die "$APP_DIR is a checkout without the OpenWrt port files and has either local changes or no $WANT_REF in $REPO - nothing was overwritten. Move it aside (mv $APP_DIR $APP_DIR.old) and re-run"
     fi
 fi
 

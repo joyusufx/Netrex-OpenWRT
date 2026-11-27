@@ -729,7 +729,7 @@ def _run_wrong_branch_heal(tmp_path, *, dirty):
     script.write_text(
         'log() { echo "LOG: $*"; }\n'
         'die() { echo "DIE: $*" >&2; exit 1; }\n'
-        f"APP_DIR='{app}'\nREF=\n" + block)
+        f"APP_DIR='{app}'\nREF=\nREPO=https://example.invalid/fork.git\n" + block)
     r = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True,
                        timeout=30,
                        env={"PATH": f"{bindir}:/usr/bin:/bin", "GIT_LOG": str(git_log),
@@ -746,7 +746,9 @@ def test_openwrt_installer_switches_a_main_checkout_to_the_port_branch(tmp_path)
     r, calls = _run_wrong_branch_heal(tmp_path / "clean", dirty=False)
     assert r.returncode == 0, r.stderr
     assert "switched" in r.stdout and "openwrt-mips-port" in r.stdout
+    assert any("remote set-url origin https://example.invalid/fork.git" in c for c in calls)
     assert any("checkout -B openwrt-mips-port FETCH_HEAD" in c for c in calls)
+    assert any("branch --set-upstream-to=origin/openwrt-mips-port" in c for c in calls)
 
 
 def test_openwrt_installer_never_clobbers_a_dirty_checkout(tmp_path):
