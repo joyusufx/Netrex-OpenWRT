@@ -36,6 +36,11 @@ Fixed:
 - The guest waiting page: entering a guest code now also works when the same browser is logged in to the dashboard, the "start browsing" button gets the focus after approval, hidden parts stay hidden, and the pulsing animation stops for people who turned off motion on their device. Contributed by @compnew2006.
 - Website block/allow rules were rebuilt every time the gateway started, so their numbers changed on each restart. They are now kept as they are. If an older version was interrupted in the middle of that rebuild (for example by a power cut), the rules it left behind are put back on the next start instead of being lost. Contributed by @compnew2006.
 
+## [0.5.12] — 2026-11-27
+
+Fixed:
+- On OpenWrt routers, some devices could lose the internet after a router restart even though they were allowed to browse, and some websites would not open on devices that did have the internet. Both problems are fixed: the gateway no longer cuts a device off just because its list of connected devices was briefly empty (which happens right after a restart), and the router no longer hands out a second, competing IPv6 configuration alongside the gateway's own — that second path is what made some websites hang.
+
 ## [0.5.11] — 2026-11-24
 
 Changed:

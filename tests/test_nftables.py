@@ -781,6 +781,27 @@ def test_arp_lock_known_ips_ignores_ipv6_addresses():
     assert eng.available
 
 
+def test_arp_lock_empty_lease_sync_never_flushes_known_ips():
+    """An empty lease map must not program an empty known_ips set: the flush
+    would leave the deny rule blackholing every managed device (OpenWrt wipes
+    the tmpfs lease file at reboot, so the first ticks see no leases)."""
+    fake = FakeNft()
+    eng = _locked_engine(fake)
+    eng.start()
+    eng.update_state({"192.168.2.111": "aa:bb:cc:dd:ee:01"}, {})
+    assert fake.known_ips == {"192.168.2.111"}
+    eng.update_state({}, {})  # e.g. lease file truncated after a reboot
+    assert fake.known_ips == {"192.168.2.111"}  # kernel membership retained
+    n_flush = sum(1 for c in fake.calls
+                  if c[1:3] == ["flush", "set"] and c[3].endswith("known_ips"))
+    eng.update_state({}, {})
+    assert sum(1 for c in fake.calls
+               if c[1:3] == ["flush", "set"] and c[3].endswith("known_ips")) == n_flush
+    # and the first real lease after the outage is admitted again
+    eng.update_state({"192.168.2.112": "aa:bb:cc:dd:ee:02"}, {})
+    assert fake.known_ips == {"192.168.2.112"}
+
+
 def test_arp_lock_known_ips_only_rebuilt_on_change():
     """A same-set membership must not re-flush known_ips every tick (a rebuild
     briefly drops every managed device between the flush and the last re-add)."""

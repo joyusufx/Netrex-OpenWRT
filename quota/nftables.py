@@ -625,9 +625,14 @@ class NftablesEngine:
         known = sorted(ip for ip in ip_to_mac if ":" not in ip)
         if known and known == self._last_known_ips:
             return
-        # A genuinely empty set is never programmed (see the guard above): the
-        # kernel keeps its last non-empty membership, which errs toward ALLOWING
-        # (never drops a device on stale data) and avoids a boot-time deny-all.
+        # A genuinely empty set is never programmed: the kernel keeps its last
+        # non-empty membership, which errs toward ALLOWING (never drops a
+        # device on stale data) and avoids a boot-time deny-all. This matters
+        # on OpenWrt, where the lease file is a tmpfs path wiped at reboot:
+        # until clients renew, the sync would otherwise flush known_ips empty
+        # and the gateway-lock deny rule blackholes every managed device.
+        if not known:
+            return
         self._last_known_ips = None  # not yet committed; retry next tick if a step fails
         if self._run(["flush", "set", f"{FAMILY} {self.table} known_ips"]):
             ok = True

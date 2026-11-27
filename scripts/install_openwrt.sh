@@ -178,5 +178,24 @@ fi
 cp "$APP_DIR/scripts/quota-manager.openwrt" /etc/init.d/quota-manager
 chmod +x /etc/init.d/quota-manager
 /etc/init.d/quota-manager enable
+
+# Netrex must be the only Router Advertisement / DHCPv6 source on the LAN.
+# odhcpd keeps advertising the upstream router as the v6 gateway, so dual-stack
+# clients prefer IPv6 for AAAA sites: that traffic either bypasses the box
+# (uncounted, never blockable) or rides a broken upstream v6 path and hangs.
+# IPv4 quota keeps working either way; on v6-only hangs only some sites open.
+if command -v uci >/dev/null 2>&1; then
+    if [ "$(uci -q get dhcp.lan.ra 2>/dev/null)" != "" ] ||
+       [ "$(uci -q get dhcp.lan.dhcpv6 2>/dev/null)" != "" ] ||
+       [ "$(uci -q get dhcp.lan.ra_management 2>/dev/null)" != "" ]; then
+        uci set dhcp.lan.ra='0'
+        uci set dhcp.lan.dhcpv6='0'
+        uci set dhcp.lan.ra_management='0'
+        uci commit dhcp
+        /etc/init.d/odhcpd restart 2>/dev/null || true
+        log "odhcpd RA/DHCPv6 disabled on LAN (Netrex is the only RA source)"
+    fi
+fi
+
 /etc/init.d/quota-manager restart || /etc/init.d/quota-manager start
 log "done. Dashboard: http://$LAN_IP:8080"
