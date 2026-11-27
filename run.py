@@ -266,6 +266,12 @@ def _parse_args() -> argparse.Namespace:
         help="override web port (can also set QUOTA_PORT env var)",
     )
     p.add_argument("--debug", action="store_true", help="enable debug logging")
+    p.add_argument(
+        "--self-update",
+        action="store_true",
+        help="fast-forward this git checkout from the fork's branch, restart "
+             "the service when that changed anything, and exit",
+    )
     return p.parse_args()
 
 
@@ -2757,8 +2763,28 @@ class Gateway:
         log.info("shutdown complete")
 
 
+def _self_update() -> None:
+    """``--self-update``: update the checkout from the fork's branch, then let
+    the service manager restart us when the code actually changed."""
+    from quota.updater import update_from_git
+
+    result = update_from_git(Path(__file__).resolve().parent)
+    print(json.dumps(result))
+    if result.get("changed"):
+        try:
+            svcmgr.schedule("quota-update-restart",
+                            svcmgr.restart_shell_command("quota-manager"), 2)
+        except RuntimeError as exc:
+            print(f"restart not scheduled: {exc}")
+            raise SystemExit(1) from exc
+    raise SystemExit(0 if result.get("ok") else 1)
+
+
 def main() -> None:
     args = _parse_args()
+    if args.self_update:
+        _self_update()
+        return
     resolved_config_path = cfg_mod.resolve_config_path(args.config)
     cfg = cfg_mod.load_config(resolved_config_path)
     if args.port is not None:

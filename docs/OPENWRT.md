@@ -32,6 +32,12 @@ re-run works offline. Re-running the installer, the in-app self-update
 (`quota/updater.py`) or `--upgrade` pulls only a git checkout; an existing
 `/etc/quota-gateway/config.yaml` is never overwritten.
 
+A router install updates from this fork, not from upstream release assets (that
+pipeline builds no MIPS packages): `python3 run.py --self-update` shallow-fetches
+`joyusufx/Netrex-OpenWRT` (`openwrt-mips-port`), fast-forwards the checkout only
+when it is clean, and schedules a service restart when the commit changed. Local
+edits or a diverged branch refuse instead of being overwritten.
+
 ## Seeded network settings (why quota accounting works at all)
 
 `config.yaml` ships the Debian laptop gateway's values: clients on a separate

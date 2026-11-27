@@ -7,7 +7,8 @@ import asyncio
 
 import pytest
 
-from quota.updater import Updater, parse_changelog, parse_version
+from quota.updater import (GIT_BRANCH, GIT_REPO, Updater, parse_changelog,
+                           parse_version, update_from_git)
 
 
 class FakeDb:
@@ -472,3 +473,70 @@ def test_asset_is_found_by_suffix_not_by_name(names):
     up = Updater(FakeDb(), current_version="0.5.0", install_kind="deb")
     release = {"assets": [{"name": n, "browser_download_url": f"https://x/{n}"} for n in names]}
     assert up._find_asset_url(release, "0.6.0", "deb") == f"https://x/{names[0]}"
+
+
+# -- git update (OpenWrt port) ----------------------------------------------
+
+def _fake_git(*, head="a" * 40, fetched="b" * 40, merge_rc=0, checkout=True):
+    calls: list[list[str]] = []
+
+    def run(argv, timeout=120.0):
+        calls.append(argv)
+        op, arg = argv[2], argv[3]
+        if op == "rev-parse" and arg == "--git-dir":
+            return (0, ".git\n") if checkout else (128, "fatal: not a git repository")
+        if op == "rev-parse" and arg == "HEAD":
+            return 0, head + "\n"
+        if op == "fetch":
+            return 0, ""
+        if op == "rev-parse" and arg == "FETCH_HEAD":
+            return 0, fetched + "\n"
+        if op == "merge":
+            return merge_rc, "" if merge_rc == 0 else "fatal: Not possible to fast-forward"
+        raise AssertionError(f"unexpected git call: {argv}")
+
+    return run, calls
+
+
+def test_update_from_git_fast_forwards_the_fork_branch(tmp_path):
+    run_git, calls = _fake_git()
+    result = update_from_git(tmp_path, run=run_git)
+    assert result == {"ok": True, "changed": True,
+                      "from": "a" * 12, "to": "b" * 12}
+    fetch = next(c for c in calls if c[2] == "fetch")
+    assert fetch[-2:] == [f"https://github.com/{GIT_REPO}.git", GIT_BRANCH]
+    assert "--depth" in fetch, "shallow: never pull the vendored binaries' history"
+    merge = next(c for c in calls if c[2] == "merge")
+    assert "--ff-only" in merge
+
+
+def test_update_from_git_no_change_skips_the_merge(tmp_path):
+    run_git, calls = _fake_git(head="c" * 40, fetched="c" * 40)
+    result = update_from_git(tmp_path, run=run_git)
+    assert result["ok"] is True and result["changed"] is False
+    assert not [c for c in calls if c[2] == "merge"]
+
+
+def test_update_from_git_refuses_to_clobber_local_edits(tmp_path):
+    run_git, _ = _fake_git(merge_rc=1)
+    result = update_from_git(tmp_path, run=run_git)
+    assert result["ok"] is False and result["changed"] is False
+    assert "fast-forward" in result["reason"]
+
+
+def test_update_from_git_requires_a_checkout(tmp_path):
+    run_git, _ = _fake_git(checkout=False)
+    result = update_from_git(tmp_path, run=run_git)
+    assert result["ok"] is False and "git checkout" in result["reason"]
+
+
+@pytest.mark.parametrize("repo,branch", [
+    ("../evil", GIT_BRANCH),
+    ("owner/repo; rm -rf /", GIT_BRANCH),
+    (GIT_REPO, "-upload-pack=evil"),
+])
+def test_update_from_git_rejects_unsafe_repo_or_branch(tmp_path, repo, branch):
+    run_git, calls = _fake_git()
+    result = update_from_git(tmp_path, repo=repo, branch=branch, run=run_git)
+    assert result["ok"] is False
+    assert calls == [], "rejected before git runs"

@@ -23,6 +23,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any, Callable
 
 from quota import hostarch
@@ -557,3 +558,85 @@ class Updater:
 
 def _now_iso() -> str:
     return _dt.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+# -- git-based update (the OpenWrt port) -------------------------------------
+
+#: Where the OpenWrt port's code actually comes from. The upstream release
+#: pipeline publishes no MIPS packages, so a router whose app is a git checkout
+#: updates by fast-forwarding that checkout on this fork's branch instead of
+#: installing a release asset.
+GIT_REPO = "joyusufx/Netrex-OpenWRT"
+GIT_BRANCH = "openwrt-mips-port"
+
+_REPO_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_.-]+$")
+_BRANCH_RE = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9._/-]*$")
+
+
+def _safe_repo_branch(repo: str, branch: str) -> str:
+    """Why ``repo``/``branch`` may not be passed to git (empty when fine)."""
+    if not _REPO_RE.match(repo or "") or ".." in repo:
+        return f"invalid repo {repo!r}"
+    if (not _BRANCH_RE.match(branch or "") or ".." in branch
+            or branch.endswith("/")):
+        return f"invalid branch {branch!r}"
+    return ""
+
+
+def _git(argv: list[str], timeout: float = 120.0) -> tuple[int, str]:
+    """Run git, returning (returncode, combined output). Never raises."""
+    try:
+        proc = subprocess.run(["git", *argv], capture_output=True, text=True,
+                              timeout=timeout)
+    except FileNotFoundError:
+        return 127, "git: command not found"
+    except subprocess.TimeoutExpired:
+        return 124, "git: timed out"
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+
+def update_from_git(app_dir: str | Path = "/opt/quota-manager",
+                    repo: str = GIT_REPO, branch: str = GIT_BRANCH,
+                    *, run: Callable[..., tuple[int, str]] | None = None
+                    ) -> dict[str, Any]:
+    """Fast-forward the app's git checkout to ``repo``/``branch``.
+
+    Fetches the branch from GitHub (a shallow fetch, so the vendored
+    ``bin/`` binaries' history is never pulled) and merges ``FETCH_HEAD`` with
+    ``--ff-only``: local edits or a diverged branch refuse rather than clobber
+    an admin's changes — run ``install_openwrt.sh --upgrade`` for that case.
+    Never restarts anything; the caller decides (see ``run.py --self-update``).
+    Returns ``{ok, changed, from, to, reason?}`` and never raises.
+    """
+    run = run or _git
+    app_dir = str(app_dir)
+    unsafe = _safe_repo_branch(repo, branch)
+    if unsafe:
+        return {"ok": False, "changed": False, "reason": unsafe}
+    rc, out = run(["-C", app_dir, "rev-parse", "--git-dir"])
+    if rc != 0:
+        return {"ok": False, "changed": False,
+                "reason": f"{app_dir} is not a git checkout "
+                          "(run install_openwrt.sh --upgrade)"}
+    rc, old = run(["-C", app_dir, "rev-parse", "HEAD"])
+    if rc != 0:
+        return {"ok": False, "changed": False,
+                "reason": (old.strip() or "cannot read HEAD")[:300]}
+    old = old.strip()
+    rc, out = run(["-C", app_dir, "fetch", "--quiet", "--depth", "1",
+                   f"https://github.com/{repo}.git", branch], timeout=300.0)
+    if rc != 0:
+        return {"ok": False, "changed": False, "from": old[:12],
+                "reason": f"fetch failed: {out.strip()[-300:]}"}
+    rc, new = run(["-C", app_dir, "rev-parse", "FETCH_HEAD"])
+    if rc != 0:
+        return {"ok": False, "changed": False, "from": old[:12],
+                "reason": (new.strip() or "cannot read FETCH_HEAD")[:300]}
+    new = new.strip()
+    if new == old:
+        return {"ok": True, "changed": False, "from": old[:12], "to": new[:12]}
+    rc, out = run(["-C", app_dir, "merge", "--ff-only", "--quiet", "FETCH_HEAD"])
+    if rc != 0:
+        return {"ok": False, "changed": False, "from": old[:12], "to": new[:12],
+                "reason": f"cannot fast-forward (local edits?): {out.strip()[-300:]}"}
+    return {"ok": True, "changed": True, "from": old[:12], "to": new[:12]}
