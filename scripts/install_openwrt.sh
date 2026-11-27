@@ -59,8 +59,24 @@ if [ -d "$APP_DIR/.git" ] || [ -f "$APP_DIR/run.py" ]; then
         log "existing installation at $APP_DIR - skipping download"
     fi
 else
-    log "cloning into $APP_DIR"
-    git clone --depth 1 "$REPO" "$APP_DIR"
+    log "cloning into $APP_DIR (bin/ and docs/ excluded)"
+    # The tip tree carries ~188 MB of vendored binaries (bin/sing-box,
+    # bin/sing-box.exe, geoip/geosite) that a router never executes: the app
+    # skips a sing-box ELF built for another CPU and uses the router's own
+    # sing-box package (quota/vpn_parser.py find_sing_box_binary). A plain
+    # --depth 1 clone still transfers the whole tree and stalls mid-pack on a
+    # router. A blob-filtered sparse clone fetches only the code that runs.
+    if git clone --depth 1 --filter=blob:none --no-checkout "$REPO" "$APP_DIR" &&
+       git -C "$APP_DIR" sparse-checkout set --no-cone '/*' '!/bin' '!/docs' &&
+       git -C "$APP_DIR" checkout; then
+        :
+    else
+        # partial clone needs a git >= 2.19 on both ends; fall back to a full
+        # shallow clone rather than leave the user with nothing.
+        log "sparse clone unsupported here - falling back to a full shallow clone"
+        rm -rf "$APP_DIR"
+        git clone --depth 1 "$REPO" "$APP_DIR"
+    fi
 fi
 
 # MIPS routers have no Rust/C toolchain: requirements-openwrt.txt is pinned to

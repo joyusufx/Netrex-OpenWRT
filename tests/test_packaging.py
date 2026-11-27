@@ -607,6 +607,23 @@ def test_openwrt_reinstall_never_rewrites_an_existing_config(tmp_path):
     assert "existing" in out and "kept" in out
 
 
+def test_openwrt_installer_clones_sparse_without_bin_docs(tmp_path):
+    """A router clone must not drag the ~188 MB of vendored binaries in bin/
+    (x86-64/Windows sing-box, geoip/geosite) across the wire: the port never
+    executes them, it uses the router's own sing-box package. The clone has to
+    be blob-filtered and sparse-checked-out to exclude bin/ and docs/, with a
+    full --depth 1 fallback for gits without partial clone."""
+    text = _read(REPO / "scripts" / "install_openwrt.sh")
+    assert "--filter=blob:none" in text, "clone must fetch blobs on demand"
+    assert "--no-checkout" in text
+    assert "sparse-checkout set" in text and "'!/bin'" in text and "'!/docs'" in text
+    # fallback path still lands a working checkout
+    assert "git clone --depth 1" in text
+    # upgrade path (git pull --ff-only) keeps working on a filtered clone:
+    # no non-standard fetch refspec or rebase trickery introduced
+    assert "pull --ff-only" in text
+
+
 def test_openwrt_installer_puts_the_database_on_flash(tmp_path):
     """Devices, rules and usage all live at db_path, and the firewall config is
     written beside it. config.yaml ships the Debian path /var/lib/..., but on a
