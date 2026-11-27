@@ -285,6 +285,15 @@ def _fetch_rdap(ip: str) -> dict | None:
         return None
 
 
+#: Owners are learned per network range and kept in RAM + a JSON file. Both are
+#: capped: every unique remote address the LAN talks to would otherwise add an
+#: entry for the lifetime of the process (the router runs for months).
+_MAX_RANGES = 5000
+_MAX_NEG = 4096
+#: seconds a "no owner known" answer is trusted before the address is queried again
+_NEG_TTL = 3600.0
+
+
 class _OwnerResolver:
     """Who owns this IP? One RDAP query per network RANGE (not per address), done on a
     daemon thread at most ~1/s, cached in memory and in a small JSON file."""
@@ -309,6 +318,7 @@ class _OwnerResolver:
         try:
             for net, owner in json.loads(self._path.read_text(encoding="utf-8")):
                 self._ranges.append((ipaddress.ip_network(net), str(owner)))
+            del self._ranges[: max(0, len(self._ranges) - _MAX_RANGES)]
         except (OSError, ValueError, TypeError):
             self._ranges = []
 
@@ -318,7 +328,7 @@ class _OwnerResolver:
         self._last_save = time.time()
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._path.write_text(json.dumps([[str(n), o] for n, o in self._ranges[-5000:]]),
+            self._path.write_text(json.dumps([[str(n), o] for n, o in self._ranges[-_MAX_RANGES:]]),
                                   encoding="utf-8")
         except OSError:
             pass
@@ -332,7 +342,7 @@ class _OwnerResolver:
             for net, owner in self._ranges:
                 if addr in net:
                     return owner
-            if time.time() - self._neg.get(ip, 0) < 3600:
+            if time.time() - self._neg.get(ip, 0) < _NEG_TTL:
                 return None
             if ip in self._pending:
                 return None
@@ -360,11 +370,33 @@ class _OwnerResolver:
                 self._pending.discard(ip)
                 if owner:
                     self._ranges.append((net or ipaddress.ip_network(ip), owner))
+                    del self._ranges[: max(0, len(self._ranges) - _MAX_RANGES)]
                 else:
-                    self._neg[ip] = time.time()
+                    self._remember_miss(ip)
             if owner:
                 self._save()
             time.sleep(self._min_interval)
+
+    def _remember_miss(self, ip: str) -> None:
+        """Negative-cache one address, keeping the dict bounded (caller holds the lock).
+
+        An entry is only read for ``_NEG_TTL``, so expired ones are dropped first;
+        past ``_MAX_NEG`` within one window the oldest answers go, since they are
+        the first to expire anyway. The sweep runs down to half the cap and only
+        once per ``_MAX_NEG // 2`` inserts, so a burst of unique addresses costs
+        O(1) amortised instead of a sort per address.
+        """
+        now = time.time()
+        self._neg[ip] = now
+        if len(self._neg) <= _MAX_NEG:
+            return
+        for key in [k for k, ts in self._neg.items() if now - ts >= _NEG_TTL]:
+            del self._neg[key]
+        excess = len(self._neg) - _MAX_NEG // 2
+        if excess > 0:
+            oldest = sorted(self._neg.items(), key=lambda kv: kv[1])[:excess]
+            for key, _ in oldest:
+                del self._neg[key]
 
 
 def _base_domain(name: str) -> str:

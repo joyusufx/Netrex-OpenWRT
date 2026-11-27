@@ -197,6 +197,47 @@ def test_unknown_ip_is_remembered_as_negative(tmp_path):
     assert len(calls) == 1
 
 
+def test_negative_cache_is_pruned_and_bounded(tmp_path):
+    """A router runs for months: one entry per unowned address must not pile up."""
+    import time
+    r = flows._OwnerResolver(fetch=lambda ip: None, min_interval=0)
+    r._neg["203.0.113.9"] = time.time() - flows._NEG_TTL - 5
+    keys = [f"198.18.{i // 250}.{i % 250 + 1}"
+            for i in range(flows._MAX_NEG + 1)]
+    for key in keys:
+        r._remember_miss(key)
+    assert "203.0.113.9" not in r._neg          # expired answer dropped
+    assert len(r._neg) <= flows._MAX_NEG
+    assert keys[-1] in r._neg                  # newest kept
+    assert keys[0] not in r._neg               # oldest evicted first
+
+
+def test_owner_ranges_are_capped_in_memory(tmp_path):
+    import json
+    cache = tmp_path / "owners.json"
+    rows = [[f"10.{i // 256}.{i % 256}.0/24", f"owner{i}"]
+            for i in range(flows._MAX_RANGES + 20)]
+    cache.write_text(json.dumps(rows), encoding="utf-8")
+    r = flows._OwnerResolver(fetch=lambda ip: None, cache_path=cache)
+    assert len(r._ranges) == flows._MAX_RANGES
+    assert r._ranges[-1][1] == f"owner{flows._MAX_RANGES + 19}"   # newest kept
+
+
+def test_new_owner_keeps_ranges_bounded(tmp_path):
+    import ipaddress
+    import time
+    r = flows._OwnerResolver(fetch=lambda ip: _RDAP, min_interval=0)
+    r._ranges = [(ipaddress.ip_network(f"10.{i // 256}.{i % 256}.0/24"), "old")
+                 for i in range(flows._MAX_RANGES)]
+    assert r.lookup("149.154.166.111") is None
+    for _ in range(100):
+        if r.lookup("149.154.166.111"):
+            break
+        time.sleep(0.02)
+    assert r.lookup("149.154.166.111") == "Telegram Messenger Inc"
+    assert len(r._ranges) == flows._MAX_RANGES
+
+
 def test_label_order_name_then_owner_then_ip(tmp_path):
     class Owners:
         def lookup(self, ip):
