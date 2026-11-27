@@ -180,6 +180,7 @@ install_openwrt() {
     # The router installer clones the code itself; point it at the same fork
     # this script came from unless the caller chose a URL explicitly.
     NETREX_GIT_URL=${NETREX_GIT_URL:-https://github.com/$REPO.git} \
+    NETREX_REF=${NETREX_REF:-$REF} \
         sh "$TMP/install_openwrt.sh"
 }
 

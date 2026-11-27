@@ -14,6 +14,10 @@ PYLIB=$APP_DIR/pylib
 CONF_DIR=/etc/quota-gateway
 # scripts/get.sh sets NETREX_GIT_URL so a fork's one-liner clones that fork.
 REPO=${NETREX_GIT_URL:-https://github.com/UserJoo9/Netrex.git}
+#: Branch/tag to clone. Without it git takes the remote's default branch, which
+#: on this fork is `main` — upstream code with none of the port. get.sh passes
+#: the ref it downloaded this installer from.
+REF=${NETREX_REF:-}
 # python3-yaml / python3-websockets come from the router's package feed, not
 # pip: PyYAML builds C on pip and the feed build is already compiled for the
 # router's MIPS CPU. kmod-tun/kmod-ifb/tc are needed for shaping + VPN share,
@@ -64,10 +68,19 @@ else
     # bin/sing-box.exe, geoip/geosite) that a router never executes: the app
     # skips a sing-box ELF built for another CPU and uses the router's own
     # sing-box package (quota/vpn_parser.py find_sing_box_binary). A plain
-    # --depth 1 clone still transfers the whole tree and stalls mid-pack on a
-    # router. A blob-filtered sparse clone fetches only the code that runs.
-    if git clone --depth 1 --filter=blob:none --no-checkout "$REPO" "$APP_DIR" &&
-       git -C "$APP_DIR" sparse-checkout set --no-cone '/*' '!/bin' '!/docs' &&
+    # --depth 1 clone still transfers the whole tree (68.6 MiB pack) and stalls
+    # mid-pack on a router. A blob-filtered sparse clone fetches only the code.
+    #
+    # The sparse patterns go into .git/info/sparse-checkout rather than through
+    # `git sparse-checkout set --no-cone`: that flag only exists in git >= 2.37,
+    # and older OpenWrt (22.03 ships 2.35) failed it, silently falling back to
+    # the very full clone this avoids. The file form works on every git.
+    BRANCH_ARG=
+    [ -n "$REF" ] && BRANCH_ARG="--branch $REF"
+    if git clone --depth 1 --filter=blob:none --no-checkout $BRANCH_ARG \
+           "$REPO" "$APP_DIR" &&
+       git -C "$APP_DIR" config core.sparseCheckout true &&
+       printf '%s\n' '/*' '!/bin' '!/docs' > "$APP_DIR/.git/info/sparse-checkout" &&
        git -C "$APP_DIR" checkout; then
         :
     else
@@ -75,7 +88,7 @@ else
         # shallow clone rather than leave the user with nothing.
         log "sparse clone unsupported here - falling back to a full shallow clone"
         rm -rf "$APP_DIR"
-        git clone --depth 1 "$REPO" "$APP_DIR"
+        git clone --depth 1 $BRANCH_ARG "$REPO" "$APP_DIR"
     fi
 fi
 

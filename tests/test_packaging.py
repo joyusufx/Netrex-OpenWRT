@@ -577,7 +577,7 @@ def _run_checkout_step(tmp_path, *, has_git, has_code, upgrade):
     script = tmp_path / "step.sh"
     script.write_text(
         "log() { echo \"[netrex] $*\"; }\n"
-        f"APP_DIR='{app}'\nUPGRADE={upgrade}\nREPO=https://example.invalid/x.git\n"
+        f"APP_DIR='{app}'\nUPGRADE={upgrade}\nREPO=https://example.invalid/x.git\nREF=\n"
         "set -eu\n" + fragment)
     r = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True,
                        env={"PATH": f"{bindir}:/usr/bin:/bin"}, timeout=30)
@@ -688,6 +688,77 @@ def test_openwrt_reinstall_never_rewrites_an_existing_config(tmp_path):
     assert "existing" in out and "kept" in out
 
 
+def _run_clone_step(tmp_path, *, ref, clone_ok=True):
+    """Run the installer's clone block with a fake git that records argv."""
+    text = _read(REPO / "scripts" / "install_openwrt.sh").replace("\r\n", "\n")
+    start = text.index('    log "cloning into')
+    block = text[start:text.index("\n    fi\n", start) + len("\n    fi\n")]
+    bindir = tmp_path / "bin"
+    bindir.mkdir(parents=True)
+    git_log = tmp_path / "git.log"
+    fake = bindir / "git"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'last=""; for a in "$@"; do last="$a"; done\n'
+        'printf "%s\\n" "$*" >> "$GIT_LOG"\n'
+        'case "$1" in\n'
+        '  clone)\n'
+        '    n=$(grep -c "^clone " "$GIT_LOG")\n'
+        '    if [ "$CLONE_FAIL" = 1 ] && [ "$n" -le 1 ]; then exit 1; fi\n'
+        '    mkdir -p "$last/.git/info" ;;\n'
+        "esac\n"
+        "exit 0\n")
+    fake.chmod(0o755)
+    app_dir = tmp_path / "app"
+    script = tmp_path / "clone.sh"
+    script.write_text(
+        "log() { echo \"LOG: $*\"; }\n"
+        f"APP_DIR='{app_dir}'\n"
+        "REPO='https://example.invalid/fork.git'\n"
+        f"REF='{ref}'\n" + block)
+    r = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True,
+                       timeout=30,
+                       env={"PATH": f"{bindir}:/usr/bin:/bin", "GIT_LOG": str(git_log),
+                            "CLONE_FAIL": "0" if clone_ok else "1"})
+    assert r.returncode == 0, r.stderr
+    calls = git_log.read_text().splitlines()
+    pattern = app_dir / ".git" / "info" / "sparse-checkout"
+    return r.stdout, calls, (pattern.read_text() if pattern.exists() else "")
+
+
+def test_openwrt_installer_clones_the_requested_branch(tmp_path):
+    """The fork's default branch is main (upstream code, no port), so a clone
+    without --branch silently installs the wrong code — and pulls the tree that
+    still carries bin/. NETREX_REF must reach the clone, both on the filtered
+    path and on the fallback."""
+    out, calls, _ = _run_clone_step(tmp_path / "pinned", ref="openwrt-mips-port")
+    first = next(c for c in calls if c.startswith("clone "))
+    assert "--branch openwrt-mips-port" in first
+    assert "--filter=blob:none" in first and "--no-checkout" in first
+    assert "https://example.invalid/fork.git" in first
+
+    out, calls, _ = _run_clone_step(tmp_path / "unpinned", ref="")
+    assert "--branch" not in next(c for c in calls if c.startswith("clone "))
+
+    out, calls, _ = _run_clone_step(tmp_path / "fallback", ref="openwrt-mips-port",
+                                    clone_ok=False)
+    assert "falling back" in out
+    clones = [c for c in calls if c.startswith("clone ")]
+    assert len(clones) == 2 and all("--branch openwrt-mips-port" in c for c in clones)
+
+
+def test_openwrt_installer_writes_sparse_patterns_without_the_subcommand(tmp_path):
+    """`git sparse-checkout set --no-cone` needs git >= 2.37; older OpenWrt
+    (22.03: 2.35) failed it and fell back to the full 68.6 MiB clone. The
+    config + .git/info/sparse-checkout form works everywhere."""
+    out, calls, pattern = _run_clone_step(tmp_path, ref="openwrt-mips-port")
+    assert not any("sparse-checkout" in c for c in calls), \
+        "must not call the git sparse-checkout subcommand"
+    assert any("config core.sparseCheckout true" in c for c in calls)
+    assert pattern.split() == ["/*", "!/bin", "!/docs"]
+    assert any(c.strip() == "checkout" or c.endswith(" checkout") for c in calls)
+
+
 def test_openwrt_installer_clones_sparse_without_bin_docs(tmp_path):
     """A router clone must not drag the ~188 MB of vendored binaries in bin/
     (x86-64/Windows sing-box, geoip/geosite) across the wire: the port never
@@ -697,7 +768,10 @@ def test_openwrt_installer_clones_sparse_without_bin_docs(tmp_path):
     text = _read(REPO / "scripts" / "install_openwrt.sh")
     assert "--filter=blob:none" in text, "clone must fetch blobs on demand"
     assert "--no-checkout" in text
-    assert "sparse-checkout set" in text and "'!/bin'" in text and "'!/docs'" in text
+    assert "core.sparseCheckout true" in text
+    assert "'!/bin'" in text and "'!/docs'" in text
+    assert 'git -C "$APP_DIR" sparse-checkout' not in text, \
+        "git < 2.37 has no --no-cone: write the pattern file instead"
     # fallback path still lands a working checkout
     assert "git clone --depth 1" in text
     # upgrade path (git pull --ff-only) keeps working on a filtered clone:
