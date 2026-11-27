@@ -13,11 +13,13 @@ APP_DIR=/opt/quota-manager
 PYLIB=$APP_DIR/pylib
 CONF_DIR=/etc/quota-gateway
 # scripts/get.sh sets NETREX_GIT_URL so a fork's one-liner clones that fork.
-REPO=${NETREX_GIT_URL:-https://github.com/UserJoo9/Netrex.git}
-#: Branch/tag to clone. Without it git takes the remote's default branch, which
-#: on this fork is `main` — upstream code with none of the port. get.sh passes
-#: the ref it downloaded this installer from.
-REF=${NETREX_REF:-}
+# Default to the fork that carries the OpenWrt port: upstream UserJoo9/Netrex
+# has no openwrt-mips-port, so defaulting there broke every bare run.
+REPO=${NETREX_GIT_URL:-https://github.com/joyusufx/Netrex-OpenWRT.git}
+#: Branch/tag to clone. get.sh passes the ref it downloaded this installer
+#: from; the default is the port branch, not the remote's default branch
+#: (which is upstream code without the port).
+REF=${NETREX_REF:-openwrt-mips-port}
 # python3-yaml / python3-websockets come from the router's package feed, not
 # pip: PyYAML builds C on pip and the feed build is already compiled for the
 # router's MIPS CPU. kmod-tun/kmod-ifb/tc are needed for shaping + VPN share,

@@ -22,8 +22,10 @@
 # POSIX sh only: it runs under BusyBox ash on a router and dash on Debian.
 set -eu
 
-REPO=${NETREX_REPO:-UserJoo9/Netrex}
-REF=${NETREX_REF:-main}
+DEFAULT_REPO=UserJoo9/Netrex
+DEFAULT_REF=main
+REPO=${NETREX_REPO:-$DEFAULT_REPO}
+REF=${NETREX_REF:-$DEFAULT_REF}
 CHANNEL=${NETREX_APT_CHANNEL:-stable}
 
 log() { echo "[netrex] $*"; }
@@ -177,10 +179,19 @@ install_openwrt() {
         fetch "$url" "$TMP/install_openwrt.sh" \
             || die "cannot download $url - check the router's internet access, DNS and clock"
     fi
-    # The router installer clones the code itself; point it at the same fork
-    # this script came from unless the caller chose a URL explicitly.
-    NETREX_GIT_URL=${NETREX_GIT_URL:-https://github.com/$REPO.git} \
-    NETREX_REF=${NETREX_REF:-$REF} \
+    # The router installer clones the code itself. The OpenWrt port lives on
+    # the Netrex-OpenWRT fork's openwrt-mips-port branch, so if the caller left
+    # the defaults (the release repo, whose main is upstream code without the
+    # port) point the router installer at the port instead; an explicit
+    # --repo/--ref still wins.
+    port_url=https://github.com/joyusufx/Netrex-OpenWRT.git
+    port_ref=openwrt-mips-port
+    url=${NETREX_GIT_URL:-}
+    ref=${NETREX_REF:-}
+    if [ -z "$url" ] && [ "$REPO" = "$DEFAULT_REPO" ]; then url=$port_url; fi
+    if [ -z "$ref" ] && [ "$REF" = "$DEFAULT_REF" ]; then ref=$port_ref; fi
+    NETREX_GIT_URL=${url:-https://github.com/$REPO.git} \
+    NETREX_REF=${ref:-$REF} \
         sh "$TMP/install_openwrt.sh"
 }
 
