@@ -38,6 +38,29 @@ pipeline builds no MIPS packages): `python3 run.py --self-update` shallow-fetche
 when it is clean, and schedules a service restart when the commit changed. Local
 edits or a diverged branch refuse instead of being overwritten.
 
+### Install-path migration notes (for maintainers)
+
+The installer defaults to the fork that carries the port, `joyusufx/Netrex-OpenWRT`
+(branch `openwrt-mips-port`). Upstream `UserJoo9/Netrex` has no port branch, so
+defaulting there made every bare run fail on the wrong-branch heal. Overrides:
+`NETREX_GIT_URL` / `NETREX_REF` (installer), `NETREX_REPO` / `NETREX_REF` (get.sh).
+
+Phases, each leaving installs working:
+
+1. **Heal a stale checkout** (`scripts/install_openwrt.sh` ~line 55): a clean
+   `/opt/quota-manager` checkout without the port files gets origin repointed at
+   the install repo, `openwrt-mips-port` fetched and checked out, upstream set —
+   so `--upgrade`'s `git pull --ff-only` keeps tracking the port branch.
+2. **Refuse to clobber**: a dirty checkout or a missing ref stops with the
+   "move it aside" message; nothing is overwritten.
+3. **Clone defaults** (this change): bare runs now clone the port repo/branch
+   directly; phase 1 and 2 remain for checkouts made before this default.
+
+Preserved exactly: `/opt/quota-manager`, `/etc/quota-gateway/*` (config and DB
+never overwritten), the skip-download-on-existing-install behaviour, and
+`NETREX_REPO`/`NETREX_REF` overrides. Rollback for the current phase: revert
+commit `e57072c` (defaults return to upstream, phase 1/2 heal still applies).
+
 ## Seeded network settings (why quota accounting works at all)
 
 `config.yaml` ships the Debian laptop gateway's values: clients on a separate
