@@ -1182,3 +1182,35 @@ def test_gateway_unit_is_reachable_as_netrex_service():
     assert "Alias=netrex.service" in unit.split("[Install]", 1)[1]
     assert "systemctl enable quota-gateway" in text, "the alias link is created by enabling the unit"
     assert "Description=Netrex gateway" in unit
+
+
+def test_openwrt_uninstaller_removes_what_install_and_runtime_add():
+    """Uninstall must revert every kernel object and file the installer and the
+    running app create - an app that is stopped but leaves its nft tables, tc
+    qdiscs or ARP lock behind keeps blocking and shaping devices."""
+    text = _read(REPO / "scripts" / "uninstall_openwrt.sh")
+    assert text.startswith("#!/bin/sh"), "BusyBox ash: no bash on a stock router"
+    assert "[[" not in text and "local -n" not in text
+    # every table the engine modules name, plus the NAT table (built by f-string)
+    import re as _re
+    names = set()
+    for f in ("nftables.py", "firewall.py", "schedule_nft.py", "arp_lock.py"):
+        names |= set(_re.findall(r'"(quota_[a-z0-9_]+)"',
+                                 _read(REPO / "quota" / f)))
+    names.add("quota_nat")
+    for t in sorted(names):
+        assert t in text, f"uninstaller must delete table {t}"
+    # host state outside the two directories
+    for needle in ("tc qdisc del", "ifb0", "ip rule del", "ip route flush table",
+                   "dhcp.lan.ra='server'", "dhcp.lan.dhcpv6='server'",
+                   "quota-*.conf", "99-zz-quota-ipv6.conf", "nf_conntrack_acct"):
+        assert needle in text, needle
+    # files: the app dir (and the installer's moved-aside copies) + the conf dir
+    assert "/opt/quota-manager" in text and "/etc/quota-gateway" in text
+    assert '"$APP_DIR".old.*' in text, "installer leaves /opt/quota-manager.old.<ts>"
+    # data can be kept, and a failure is reported instead of silently ignored
+    assert "NETREX_KEEP_DATA" in text
+    assert "exit 1" in text
+    # never a bare recursive delete of a root-level path
+    for bad in ("rm -rf / ", "rm -rf /*", "rm -rf /etc ", "rm -rf /opt "):
+        assert bad not in text, bad

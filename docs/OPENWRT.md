@@ -71,6 +71,42 @@ never overwritten), the skip-download-on-existing-install behaviour, and
 `NETREX_REPO`/`NETREX_REF` overrides. Rollback for the current phase: revert
 commit `e57072c` (defaults return to upstream, phase 1/2 heal still applies).
 
+## Uninstall (remove Netrex completely)
+
+Run it from the checkout that is already on the router, or copy the single file
+over — it needs nothing from the app dir:
+
+```sh
+# on the router, as root:
+sh /opt/quota-manager/scripts/uninstall_openwrt.sh
+# keep the database and config (moved to /root/netrex-uninstall-<ts>/):
+NETREX_KEEP_DATA=1 sh /opt/quota-manager/scripts/uninstall_openwrt.sh
+```
+
+What it reverts, in this order — every step is guarded, so a second run (or a
+half-finished install) is harmless:
+
+1. procd service: `stop`, `disable`, `/etc/rc.d/S*quota-manager`, the init
+   script, and any `run.py`/`sing-box` process it left running.
+2. Kernel objects that outlive the process: nft tables `quota_gateway`,
+   `quota_nat`, `quota_firewall`, `quota_schedule` and `arp quota_arp_lock`; the
+   `tc` root/ingress qdiscs on the LAN device, the WAN device and `ifb0`; the
+   VPN-share `ip rule`s and route table 200.
+3. Host config: `quota-*.conf` fragments in `/tmp/dnsmasq.d` and
+   `/etc/dnsmasq.d`, `/etc/sysctl.d/99-zz-quota-ipv6.conf`, conntrack accounting
+   back to 0, and odhcpd's RA/DHCPv6 switched back to `server` (the installer
+   turned them off because Netrex was the only RA source; with Netrex gone
+   dual-stack clients would otherwise wait on AAAA lookups), then `dnsmasq` and
+   `odhcpd` restarted.
+4. Files: `/opt/quota-manager`, `/opt/quota-manager.old.*`, `/etc/quota-gateway`
+   (config, DB, `pylib/`, `ip-owners.json`, `firewall_config.json`,
+   `firewall_snapshots/`, `smb-credentials/`).
+
+It exits non-zero and lists what it could not remove, so failures are visible
+instead of silent. **Reboot once** afterwards so nothing cached in the kernel
+survives. Packages the installer added (`python3`, `py3-pip`, `kmod-ifb`, `tc`,
+`ip-full`, …) are deliberately left installed — other software may use them.
+
 ## Seeded network settings (why quota accounting works at all)
 
 `config.yaml` ships the Debian laptop gateway's values: clients on a separate

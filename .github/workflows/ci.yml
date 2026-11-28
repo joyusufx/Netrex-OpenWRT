@@ -71,6 +71,7 @@ jobs:
           # keep them POSIX sh (no bash arrays, [[ ]], or local -n)
           sh -n scripts/install_openwrt.sh
           sh -n scripts/get.sh
+          sh -n scripts/uninstall_openwrt.sh
 
       - name: Run test suite (pytest)
         env:
