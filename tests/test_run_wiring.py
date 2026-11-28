@@ -3237,3 +3237,93 @@ def test_wan_watchdog_leaves_lan_mode_and_a_down_dial_alone(tmp_path, status):
         assert renews == []
     finally:
         loop.close()
+
+
+# ---------------------------------------------------------------------------
+# The tick must not re-read a 300k-domain rule set every 15 s.
+# ---------------------------------------------------------------------------
+
+class _DnsDbStub:
+    """Only what ``_sync_dns_rules`` touches, with a read counter."""
+
+    def __init__(self):
+        self.revision = 1
+        self.applied_sig = None
+        self.reads = 0
+        self.rules: list = []
+
+    async def list_devices(self):
+        return []
+
+    async def list_users(self):
+        return []
+
+    async def list_static_leases(self):
+        return []
+
+    async def get_preset_state(self, _preset_id):
+        return None
+
+    async def dns_revision(self):
+        return self.revision
+
+    async def dns_applied_sig(self):
+        return self.applied_sig
+
+    async def set_dns_applied_sig(self, revision, servers):
+        self.applied_sig = (revision, [list(s) for s in servers])
+
+    async def list_domain_rules(self, enabled_only=False):
+        self.reads += 1
+        return list(self.rules)
+
+
+class _DnsServiceStub:
+    async def schedule_sites(self):
+        return []
+
+
+def _dns_gateway(tmp_path):
+    from quota import dns_rules as dr
+
+    gw = Gateway.__new__(Gateway)  # no startup: this path reads no host state
+    gw.dns_manager = dr.DnsRuleManager(conf_dir=str(tmp_path), reload_dnsmasq=False)
+    gw.database = _DnsDbStub()
+    gw.service = _DnsServiceStub()
+    gw._dns_lock = asyncio.Lock()
+    gw._dns_render_sig = None
+    return gw
+
+
+def test_dns_sync_skips_the_rule_read_until_something_changes(tmp_path):
+    loop = asyncio.new_event_loop()
+    try:
+        gw = _dns_gateway(tmp_path)
+        loop.run_until_complete(gw._sync_dns_rules())
+        assert gw.database.reads == 1  # first sync of the process renders
+
+        loop.run_until_complete(gw._sync_dns_rules())
+        assert gw.database.reads == 1  # unchanged ⇒ no re-read, no re-render
+
+        gw.database.revision += 1  # e.g. a rule was added
+        loop.run_until_complete(gw._sync_dns_rules())
+        assert gw.database.reads == 2
+
+        # A restart with the same revision trusts the persisted marker and
+        # the file on disk.
+        restarted = _dns_gateway(tmp_path)
+        restarted.database.revision = gw.database.revision
+        restarted.database.applied_sig = gw.database.applied_sig
+        loop.run_until_complete(restarted._sync_dns_rules())
+        assert restarted.database.reads == 0
+
+        # ... unless the generated file is gone (wiped /etc/dnsmasq.d).
+        (tmp_path / "quota-domains.conf").unlink()
+        wiped = _dns_gateway(tmp_path)
+        wiped.database.revision = gw.database.revision
+        wiped.database.applied_sig = gw.database.applied_sig
+        loop.run_until_complete(wiped._sync_dns_rules())
+        assert wiped.database.reads == 1
+        assert (tmp_path / "quota-domains.conf").exists()
+    finally:
+        loop.close()

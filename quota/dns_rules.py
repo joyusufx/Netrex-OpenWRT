@@ -37,6 +37,7 @@ here changes that; it is called out so it is not sold as airtight.
 
 from __future__ import annotations
 
+import io
 import logging
 import re
 import subprocess
@@ -495,6 +496,45 @@ def _tags_for(scope: str, scope_id: Optional[int],
     return []
 
 
+_UNSAFE_CONFIG_CHAR = re.compile(r"\s")
+
+#: Cost of one domain while the config is being rendered (rule object + its
+#: line + the buffer holding it). Measured on this box: 60k domains = +37 MB,
+#: 300k = +181 MB of process RSS peak, i.e. ~600 B/domain.
+PRESET_DOMAIN_BYTES = 600
+#: What the rest of the gateway needs before a single rule fits (Python +
+#: FastAPI + uvicorn + the kernel-side accounting, measured ~77 MB).
+PRESET_RAM_RESERVE_MB = 100
+
+
+def mem_total_mb(meminfo_path: str = "/proc/meminfo") -> int:
+    """Total RAM in MB, or 0 when it cannot be read (unknown ⇒ no limit)."""
+    try:
+        with open(meminfo_path, encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def preset_domain_budget(total_mb: int | None = None,
+                         reserve_mb: int = PRESET_RAM_RESERVE_MB) -> int:
+    """How many preset domains this box can hold in one render (0 = unknown).
+
+    Enabling a preset renders the whole list once; on a small router that
+    peak is what decides whether the gateway survives, so the API refuses a
+    list it cannot hold instead of being OOM-killed half way through.
+    """
+    if total_mb is None:
+        total_mb = mem_total_mb()
+    if total_mb <= 0:
+        return 0
+    usable_mb = max(0, total_mb - reserve_mb)
+    return max(20000, usable_mb * 1024 * 1024 // PRESET_DOMAIN_BYTES)
+
+
 def _is_safe_config_token(value: str) -> bool:
     """True if ``value`` cannot break out of a single generated config line.
 
@@ -505,8 +545,10 @@ def _is_safe_config_token(value: str) -> bool:
     future non-HTTP path) must not be able to smuggle a newline into a
     dnsmasq directive. Rejects any whitespace/control character.
     """
-    return bool(value) and value == value.strip() and "\n" not in value \
-        and "\r" not in value and not any(c.isspace() for c in value)
+    # One regex instead of ``any(c.isspace() for c in value)``: with a 300k
+    # domain preset that loop alone was 54% of every render (663 ms -> 147 ms
+    # for the whole set on a 4-core x86 box, far worse on a router's MIPS).
+    return bool(value) and _UNSAFE_CONFIG_CHAR.search(value) is None
 
 
 def render_rules(rules: Iterable[Any], dns_servers: Iterable[tuple[str, Optional[int], str]],
@@ -528,10 +570,13 @@ def render_rules(rules: Iterable[Any], dns_servers: Iterable[tuple[str, Optional
     blocked parent domain — dnsmasq's longest-match already picks the more
     specific rule regardless of file order.
     """
-    lines = [
-        "# Quota Manager — generated, do not edit by hand.",
-        "# Domain rules (block/allow/redirect) + per-client DNS-server overrides.",
-    ]
+    # Built in a buffer rather than a list of ~14.8 MB worth of line strings
+    # plus the joined copy: on a router every megabyte of the render peak is
+    # the difference between finishing and being OOM-killed.
+    out = io.StringIO()
+    out.write("# Quota Manager — generated, do not edit by hand.\n")
+    out.write("# Domain rules (block/allow/redirect) + per-client DNS-server "
+              "overrides.\n")
 
     ordered = sorted(
         rules,
@@ -572,9 +617,9 @@ def render_rules(rules: Iterable[Any], dns_servers: Iterable[tuple[str, Optional
         if target is None:
             # Re-point the domain at the normal upstream chain, clearing any
             # broader blackhole for it.
-            lines.append(f"server=/{domain}/#")
+            out.write(f"server=/{domain}/#\n")
         else:
-            lines.append(f"address=/{domain}/{target}")
+            out.write(f"address=/{domain}/{target}\n")
 
     if scoped_skipped:
         log.warning("skipped %d per-user/per-device domain rule(s): dnsmasq "
@@ -591,13 +636,13 @@ def render_rules(rules: Iterable[Any], dns_servers: Iterable[tuple[str, Optional
             continue
         for tag in _tags_for(scope, scope_id, device_ids_by_user):
             if tag is None:
-                lines.append(f"server={ip}")
+                out.write(f"server={ip}\n")
             elif ip not in per_tag.setdefault(tag, []):
                 per_tag[tag].append(ip)
     for tag, ips in per_tag.items():
-        lines.append(f"dhcp-option=tag:{tag},option:dns-server,{','.join(ips)}")
+        out.write(f"dhcp-option=tag:{tag},option:dns-server,{','.join(ips)}\n")
 
-    return "\n".join(lines) + "\n"
+    return out.getvalue()
 
 
 def resolve_domain_status(domain: str, rules: Iterable[Any],
@@ -697,6 +742,9 @@ def render_schedule_sites(sites: Iterable[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
+_UNSET = object()
+
+
 @dataclass
 class DnsRuleManager:
     conf_dir: str = "/etc/dnsmasq.d"
@@ -705,12 +753,12 @@ class DnsRuleManager:
     schedule_file: str = "quota-schedule.conf"
     reload_dnsmasq: bool = True
 
-    def _write_if_changed(self, path: Path, content: str) -> bool:
-        try:
-            if path.exists() and path.read_text(encoding="utf-8") == content:
-                return False
-        except OSError:
-            pass
+    def _write_if_changed(self, path: Path, content: str,
+                          previous: Any = _UNSET) -> bool:
+        if previous is _UNSET:  # caller did not read it already
+            previous = self._read(path)
+        if previous == content:
+            return False
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
@@ -727,20 +775,26 @@ class DnsRuleManager:
               schedule_sites: Optional[Iterable[str]] = None) -> bool:
         """Render + write the files. Reloads dnsmasq only if a file's
         content actually changed. Returns True if a reload was triggered.
-        ``schedule_sites`` None leaves the schedule file untouched."""
+        ``schedule_sites`` None leaves the schedule file untouched.
+        ``rules`` None means the caller already knows the rule set is
+        unchanged: the rules file is neither re-read nor re-rendered (the
+        14.8 MB read of a big ad-block preset used to happen twice per
+        tick)."""
         tags_text = render_tags(devices, static_leases=static_leases)
-        rules_text = render_rules(rules, dns_servers, device_ids_by_user)
 
         tags_path = Path(self.conf_dir) / self.tags_file
         rules_path = Path(self.conf_dir) / self.rules_file
-        files = [(tags_path, tags_text), (rules_path, rules_text)]
+        files = [(tags_path, tags_text)]
+        if rules is not None:
+            files.append((rules_path,
+                          render_rules(rules, dns_servers, device_ids_by_user)))
         if schedule_sites is not None:
             files.append((Path(self.conf_dir) / self.schedule_file,
                           render_schedule_sites(schedule_sites)))
         previous = {path: self._read(path) for path, _ in files}
         changed = False
         for path, text in files:
-            changed = self._write_if_changed(path, text) or changed
+            changed = self._write_if_changed(path, text, previous[path]) or changed
         if changed and self.reload_dnsmasq:
             if not self._reload():
                 # Never leave a file dnsmasq rejects in /etc/dnsmasq.d: the

@@ -2594,6 +2594,30 @@ def test_porn_preset_enable_disable(client):
     assert porn["enabled"] is False
 
 
+def test_dns_preset_refused_when_it_does_not_fit_in_ram(client, monkeypatch):
+    """A 300k-domain preset is ~100 MB of render peak: on a 128 MB router the
+    gateway used to be OOM-killed mid-render. Refuse it up front instead."""
+    from quota import dns_rules as dr
+
+    c, database, service = client
+    _login(c)
+    monkeypatch.setattr(dr, "preset_domain_budget", lambda *a, **k: 25)
+
+    r = c.post("/api/dns/presets/porn/enable", json={"scope": "global"})
+    assert r.status_code == 413, r.text
+    assert "25" in r.json()["detail"]
+
+    # Nothing was inserted and the preset is still off.
+    assert c.get("/api/dns/rules").json() == []
+    porn = next(p for p in c.get("/api/dns/presets").json() if p["id"] == "porn")
+    assert porn["enabled"] is False
+
+    # A preset that fits is still accepted.
+    monkeypatch.setattr(dr, "preset_domain_budget", lambda *a, **k: 0)
+    r = c.post("/api/dns/presets/porn/enable", json={"scope": "global"})
+    assert r.status_code == 200, r.text
+
+
 def test_admin_spoof_consumption(client):
     c, database, service = client
     _login(c)

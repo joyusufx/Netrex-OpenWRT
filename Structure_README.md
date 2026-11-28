@@ -756,14 +756,40 @@ devices.dns_server ─┘                              (only if content changed)
                                                   systemctl restart dnsmasq
 ```
 
-Both files are rewritten and diffed on every maintenance tick and
-immediately after any `/api/dns/*` (or `/api/{users,devices}/{id}/dns`)
-edit — same signature-gated pattern as the nftables blocked set and the tc
-tree: an unchanged render never touches dnsmasq. Unlike a SIGHUP (which only
+Both files are diffed on every maintenance tick and immediately after any
+`/api/dns/*` (or `/api/{users,devices}/{id}/dns`) edit — same
+signature-gated pattern as the nftables blocked set and the tc tree: an
+unchanged render never touches dnsmasq. Unlike a SIGHUP (which only
 re-reads `/etc/hosts` and lease-adjacent files), new `address=`/`server=`/
 `dhcp-host=` lines need a **restart** to take effect, so a rule change costs
 every client a brief (~1 s) DNS blip — acceptable for an admin edit, not
 something that happens on its own.
+
+**Render revision (why the tick can be cheap).** `quota-tags.conf` depends
+on the device list and is small, so it is re-rendered every tick. The rule
+set is not: a 300k-domain preset means a 300k-row read plus a ~15 MB
+render, which used to happen every 15 s (3 s tick, ~150 MB spike). Every
+write to `domain_rules` / `dns_presets` bumps `dns_rules_rev` in `settings`
+(`Database.bump_dns_revision`), and `run.py::_sync_dns_rules` compares
+`(revision, per-client DNS servers)` with what it last rendered, passing
+`rules=None` to `DnsRuleManager.apply` when nothing moved — the rules file
+is then neither read nor rendered. The revision it wrote is persisted as
+`dns_rules_applied_rev`, so a restart trusts the files on disk (checked for
+existence — a wiped `/etc/dnsmasq.d` is still rebuilt) instead of
+re-rendering a 300k list for nothing. `Database._read_domain_rules` reads
+in `_DOMAIN_RULE_CHUNK` (5000) row pages and closes each cursor: one
+unpaged `execute_fetchall` cost ~150 MB, which the aiosqlite worker kept
+alive after the caller dropped it.
+
+**Preset RAM budget.** Enabling a preset renders the whole list once, and
+that peak (~600 B per domain, measured: 60k → +37 MB, 300k → +181 MB) is
+what decides whether a small router survives. `preset_domain_budget()`
+derives what the box can hold from `/proc/meminfo`
+(`(MemTotal − PRESET_RAM_RESERVE_MB) ÷ PRESET_DOMAIN_BYTES`, floor 20 000,
+0 = unknown ⇒ no limit); `POST /api/dns/presets/{id}/enable` refuses a
+larger list with HTTP 413 before inserting a row. A 128 MB router takes
+about 49k domains — the Ultra preset (~330k) is refused there instead of
+being OOM-killed half way through the render.
 
 **Blocklist presets** (`ads-tracking`, `social-media`, `streaming`,
 `gambling`) are curated source lists — hosts-format or AdBlock-Plus-format —

@@ -2941,6 +2941,20 @@ def create_app(
         # WS push or another request while it enables.
         domains, _skipped = await asyncio.to_thread(_normalize_domains, raw_domains)
 
+        # A 300k-domain preset is ~100 MB of render peak. On a 128 MB router
+        # that is an OOM kill (the reported "crashes after enabling ad
+        # blocking"), so refuse the list before inserting a single row
+        # instead of dying half way through the tick.
+        budget = _dns_rules.preset_domain_budget()
+        if budget and len(domains) > budget:
+            log.warning("DNS preset %s refused: %d domains, this gateway can "
+                        "hold about %d", preset_id, len(domains), budget)
+            raise HTTPException(
+                413,
+                f"this preset has {len(domains):,} domains and this gateway "
+                f"has room for about {budget:,} in RAM — pick a lighter "
+                f"preset (Ads & Tracking or Social Media) or add RAM")
+
         # Scope-change leak fix: if this preset was already enabled at a
         # DIFFERENT scope, its old rules are orphaned unless purged here —
         # set_preset_state below only remembers the NEW scope, so the old

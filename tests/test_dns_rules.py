@@ -461,3 +461,65 @@ def test_reload_reports_failed_validation(monkeypatch):
     monkeypatch.setattr(dr.subprocess, "run", fake_run)
     assert manager._reload() is False
     assert calls == [["dnsmasq", "--test"]]  # never restarted
+
+
+# ---------------------------------------------------------------------------
+# Unchanged rule set: the tick must not re-read / re-render the (up to 14.8 MB)
+# rules file — that twice-per-tick read plus a 300k-row query is what spiked
+# ~150 MB and took the tick to ~3 s on a router with ad blocking enabled.
+# ---------------------------------------------------------------------------
+
+def test_apply_leaves_rules_file_alone_when_rules_is_none(tmp_path: Path):
+    manager = dr.DnsRuleManager(conf_dir=str(tmp_path), reload_dnsmasq=False)
+    devices = [_FakeDevice(1, "aa:bb:cc:dd:ee:01")]
+    rules = [_FakeRule("global", None, "block", "ads.example.com")]
+    assert manager.apply(devices, rules, [], {}) is True
+    rules_path = tmp_path / "quota-domains.conf"
+    before = rules_path.read_text()
+
+    # A tick where nothing about the rule set changed: no re-render, no
+    # rewrite — the file the router already has stays byte for byte.
+    assert manager.apply(devices, None, [], {}) is False
+    assert rules_path.read_text() == before
+
+    # ... and a new device still reaches the tags file, which is the only
+    # part the tick has to refresh.
+    devices.append(_FakeDevice(2, "aa:bb:cc:dd:ee:02"))
+    assert manager.apply(devices, None, [], {}) is True
+    assert "qmdev2" in (tmp_path / "quota-tags.conf").read_text()
+
+
+def test_render_reads_token_check_is_whitespace_only():
+    assert dr._is_safe_config_token("ads.example.com") is True
+    assert dr._is_safe_config_token("") is False
+    for bad in ("a b", "a\tb", "a\nb", "a\rb", " lead", "trail "):
+        assert dr._is_safe_config_token(bad) is False
+
+
+# ---------------------------------------------------------------------------
+# Preset RAM budget: a 300k-domain preset needs ~180 MB of render peak (300k
+# measured +181 MB), which a 128 MB router does not have (OOM kill mid-render).
+# The budget is derived from MemTotal so the API refuses the list instead of
+# letting the gateway die.
+# ---------------------------------------------------------------------------
+
+def test_preset_domain_budget_comes_from_total_ram():
+    for total_mb in (64, 128, 256, 1024):
+        usable_mb = max(0, total_mb - dr.PRESET_RAM_RESERVE_MB)
+        expected = max(20000, usable_mb * 1024 * 1024 // dr.PRESET_DOMAIN_BYTES)
+        assert dr.preset_domain_budget(total_mb) == expected
+    # 128 MB router: room for tens of thousands, nowhere near the 330k Ultra
+    # preset (which is exactly the OOM the user hit).
+    assert 20000 <= dr.preset_domain_budget(128) < 100000
+    assert dr.preset_domain_budget(1024) > 330000
+
+
+def test_preset_domain_budget_unlimited_when_ram_unknown():
+    assert dr.preset_domain_budget(0) == 0  # 0 = no limit enforceable
+
+
+def test_mem_total_mb_reads_meminfo(tmp_path: Path):
+    path = tmp_path / "meminfo"
+    path.write_text("MemTotal:         131072 kB\nMemFree: 900 kB\n")
+    assert dr.mem_total_mb(str(path)) == 128
+    assert dr.mem_total_mb(str(tmp_path / "missing")) == 0

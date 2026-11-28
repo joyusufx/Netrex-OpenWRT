@@ -395,6 +395,10 @@ class Gateway:
         #: does for the tc tree (a maintenance tick and an API-triggered
         #: immediate apply must not race each other's DB read + file write).
         self._dns_lock = asyncio.Lock()
+        # (revision, per-client DNS servers) whose rules are in the generated
+        # files, or None before the first sync in this process. Lets the tick
+        # skip re-reading + re-rendering a 300k-domain preset it already wrote.
+        self._dns_render_sig: tuple[int, tuple[tuple[str, int | None, str], ...]] | None = None
         #: serializes VPN-share reconciliation (tick + API immediate apply)
         #: the same way ``_shaping_lock`` serializes the tc tree.
         self._vpn_lock = asyncio.Lock()
@@ -2084,6 +2088,11 @@ class Gateway:
         say is free. Called once per maintenance tick (new devices need a
         tag even with no rule edits) and immediately after any DNS-related
         API edit via ``_apply_dns_now``.
+
+        The rule set itself is only re-read when it moved: every rule/preset
+        write bumps a revision counter, and the 300k-row read + 14.8 MB
+        render is what made the tick take ~3 s and spike ~150 MB. Devices,
+        tags and schedules are small and are still refreshed every call.
         """
         manager = self.dns_manager
         if manager is None:
@@ -2092,7 +2101,6 @@ class Gateway:
             async with self._dns_lock:
                 devices = await self.database.list_devices()
                 users = {u.id: u for u in await self.database.list_users()}
-                rules = await self.database.list_domain_rules(enabled_only=True)
                 device_ids_by_user: dict[int, list[int]] = {}
                 for dev in devices:
                     if dev.user_id is not None:
@@ -2117,6 +2125,21 @@ class Gateway:
                 for dev in devices:
                     if dev.dns_server:
                         dns_servers.append((_db.DNS_SCOPE_DEVICE, dev.id, dev.dns_server))
+                revision = await self.database.dns_revision()
+                servers = tuple(dns_servers)
+                sig = (revision, servers)
+                rules: list[_db.DomainRule] | None = None
+                if self._dns_render_sig is None:
+                    # First sync in this process: skip the render only when the
+                    # files already hold exactly this rule set and DNS servers
+                    # (a wiped /etc/dnsmasq.d must still be rebuilt).
+                    stored = await self.database.dns_applied_sig()
+                    rules_path = os.path.join(manager.conf_dir, manager.rules_file)
+                    wanted = (revision, [list(s) for s in servers])
+                    if stored != wanted or not os.path.exists(rules_path):
+                        rules = await self.database.list_domain_rules(enabled_only=True)
+                elif self._dns_render_sig != sig:
+                    rules = await self.database.list_domain_rules(enabled_only=True)
                 static_leases_list = await self.database.list_static_leases()
                 static_map = {r["mac"]: (r.get("ip", ""), r.get("ip6", ""))
                               for r in static_leases_list}
@@ -2124,6 +2147,11 @@ class Gateway:
                 await asyncio.to_thread(
                     manager.apply, devices, rules, dns_servers, device_ids_by_user,
                     static_map, schedule_sites)
+                self._dns_render_sig = sig
+                if rules is not None:
+                    # Persist so a restart with the same rule set does not
+                    # re-read and re-render it just to find the files identical.
+                    await self.database.set_dns_applied_sig(revision, servers)
         except Exception:  # noqa: BLE001
             log.exception("failed to sync DNS filtering rules")
 

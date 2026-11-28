@@ -166,6 +166,10 @@ class User:
     daily_self_edit: bool = False
 
 
+#: Rows per page when reading domain rules (see Database._read_domain_rules).
+_DOMAIN_RULE_CHUNK = 5000
+
+
 @dataclass
 class DomainRule:
     """One domain-filtering rule: block/allow/redirect a domain (+ every
@@ -835,6 +839,7 @@ class Database:
         except Exception:
             await self._conn.rollback()
             raise
+        await self.bump_dns_revision()
 
     _DOMAIN_RULE_COLS = ("id", "scope", "scope_id", "action", "domain",
                          "target_ip", "enabled", "source", "created_at")
@@ -891,6 +896,8 @@ class Database:
         log.warning("recovered %d website rule(s) left by an interrupted "
                     "upgrade (domain_rules_old)",
                     int(after["n"]) - int(before["n"]))
+        if int(after["n"]) != int(before["n"]):
+            await self.bump_dns_revision()
 
     async def _backfill_users(self) -> None:
         """Give every device without a user its own user (v2 migration).
@@ -2014,6 +2021,49 @@ class Database:
         await self.conn.execute("DELETE FROM settings WHERE key=?", (key,))
         await self.conn.commit()
 
+    # -- DNS render revision --------------------------------------------------
+    #
+    # The maintenance tick used to re-read every domain rule and re-render the
+    # dnsmasq file every 15 s whether or not anything had changed: on a 300k
+    # preset that is a 3 s tick and a ~150 MB spike. Every write to
+    # domain_rules / dns_presets bumps DNS_REVISION_KEY, and run.py only
+    # renders when the revision (or the per-client DNS servers) moved.
+
+    DNS_REVISION_KEY = "dns_rules_rev"
+    DNS_APPLIED_KEY = "dns_rules_applied_rev"
+
+    async def bump_dns_revision(self) -> int:
+        """Record that the rule set changed; returns the new revision."""
+        await self.conn.execute(
+            """INSERT INTO settings (key, value) VALUES (?, '1')
+               ON CONFLICT(key) DO UPDATE SET
+                 value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)""",
+            (self.DNS_REVISION_KEY,))
+        await self.conn.commit()
+        return await self.dns_revision()
+
+    async def dns_revision(self) -> int:
+        return _int_or_zero(await self.get_setting(self.DNS_REVISION_KEY, "0"))
+
+    async def dns_applied_sig(self) -> tuple[int, list[list]] | None:
+        """The (revision, per-client DNS servers) last written to the files."""
+        raw = await self.get_setting(self.DNS_APPLIED_KEY, "")
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+            return int(data["rev"]), [list(s) for s in data["servers"]]
+        except (ValueError, KeyError, TypeError):
+            return None
+
+    async def set_dns_applied_sig(self, revision: int, servers) -> None:
+        """Remember what the generated files hold, so a restart with an
+        unchanged rule set does not re-read and re-render them."""
+        await self.set_setting(self.DNS_APPLIED_KEY, json.dumps({
+            "rev": int(revision),
+            "servers": [list(s) for s in servers],
+        }))
+
     # -- events / audit -----------------------------------------------------
 
     async def add_event(self, message: str, level: str = "info",
@@ -2081,6 +2131,7 @@ class Database:
             (scope, scope_id, action, domain, target_ip, int(enabled),
              source, now))
         await self.conn.commit()
+        await self.bump_dns_revision()
         row = await self._fetch_one(
             "SELECT * FROM domain_rules WHERE scope=? AND scope_id IS ? "
             "AND domain=? AND action=?", (scope, scope_id, domain, action))
@@ -2113,6 +2164,7 @@ class Database:
                  enabled=excluded.enabled, source=excluded.source""",
             rows)
         await self.conn.commit()
+        await self.bump_dns_revision()
         return len(rows)
 
     async def get_domain_rule(self, rule_id: int) -> DomainRule | None:
@@ -2136,9 +2188,35 @@ class Database:
                 args.append(scope_id)
         if enabled_only:
             sql += " AND enabled=1"
-        sql += " ORDER BY id"
-        rows = await self.conn.execute_fetchall(sql, args)
-        return [_row_to_domain_rule(r) for r in rows]
+        return await self._read_domain_rules(sql, args)
+
+    async def _read_domain_rules(self, where_sql: str, args: list[Any],
+                                 chunk: int = _DOMAIN_RULE_CHUNK) -> list[DomainRule]:
+        """Read rules in id-bounded pages instead of one result set.
+
+        A 300k-domain preset as a single ``execute_fetchall`` costs ~150 MB
+        for the row list alone (measured), and the aiosqlite worker keeps
+        that list alive after the caller drops it — on a 128 MB gateway that
+        is an OOM kill. Paging keeps one page of rows live (a few MB) while
+        the finished DomainRule list is built.
+        """
+        out: list[DomainRule] = []
+        last_id = 0
+        page_sql = where_sql + " AND id > ? ORDER BY id LIMIT ?"
+        while True:
+            cursor = await self.conn.execute(page_sql, [*args, last_id, chunk])
+            try:
+                rows = await cursor.fetchall()
+            finally:
+                # Closing the cursor releases the worker thread's copy of
+                # the result; without it the page outlives the loop.
+                await cursor.close()
+            if not rows:
+                return out
+            out.extend(_row_to_domain_rule(row) for row in rows)
+            last_id = int(rows[-1]["id"])
+            if len(rows) < chunk:
+                return out
 
     async def update_domain_rule(self, rule_id: int, **fields: Any) -> DomainRule | None:
         allowed = {"enabled", "target_ip", "domain", "action"}
@@ -2153,11 +2231,13 @@ class Database:
         await self.conn.execute(
             f"UPDATE domain_rules SET {', '.join(sets)} WHERE id=?", args)
         await self.conn.commit()
+        await self.bump_dns_revision()
         return await self.get_domain_rule(rule_id)
 
     async def delete_domain_rule(self, rule_id: int) -> None:
         await self.conn.execute("DELETE FROM domain_rules WHERE id=?", (rule_id,))
         await self.conn.commit()
+        await self.bump_dns_revision()
 
     async def delete_domain_rules_by_source(self, source: str) -> int:
         """Delete every rule with an exact ``source`` match (used to remove
@@ -2169,6 +2249,7 @@ class Database:
         await self.conn.execute(
             "DELETE FROM domain_rules WHERE source=?", (source,))
         await self.conn.commit()
+        await self.bump_dns_revision()
         return len(rows)
 
     async def delete_domain_rules_by_scope(self, scope: str, scope_id: int | None) -> int:
@@ -2181,6 +2262,7 @@ class Database:
             "DELETE FROM domain_rules WHERE scope=? AND scope_id IS ?",
             (scope, scope_id))
         await self.conn.commit()
+        await self.bump_dns_revision()
         return len(rows)
 
     # -- DNS blocklist presets ------------------------------------------------
@@ -2209,11 +2291,13 @@ class Database:
                  updated_at=excluded.updated_at""",
             (preset_id, int(enabled), scope, scope_id, domain_count, time.time()))
         await self.conn.commit()
+        await self.bump_dns_revision()
 
     async def delete_preset_state(self, preset_id: str) -> None:
         await self.conn.execute(
             "DELETE FROM dns_presets WHERE preset_id=?", (preset_id,))
         await self.conn.commit()
+        await self.bump_dns_revision()
 
     # -- Guest vouchers / access codes (Captive Portal) -----------------------
 
@@ -2485,6 +2569,13 @@ def _load_heavy(raw: Any) -> dict:
         except (TypeError, ValueError):
             continue
     return out
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _row_to_domain_rule(row: Any) -> DomainRule:
